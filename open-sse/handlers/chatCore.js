@@ -26,7 +26,7 @@ import { takeRenamedToolNames } from "../utils/opencodeFingerprint.js";
 import { injectCaveman } from "../rtk/caveman.js";
 import { injectPonytail } from "../rtk/ponytail.js";
 import { injectGlobal } from "../payload/globalInject.js";
-import { estimateGlobalInjection, formatTok } from "../rtk/tokenEstimate.js";
+import { estimateGlobalInjection, estimateTokens, formatTok } from "../rtk/tokenEstimate.js";
 import { formatRtkLog } from "../rtk/index.js";
 import { compressMessagesAuto } from "../rtk/sidecar.js";
 import { compressWithHeadroom, formatHeadroomLog, formatHeadroomSizeLog, isHeadroomPhantomSavings } from "../rtk/headroom.js";
@@ -382,7 +382,7 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
       skillRouterCustom: injectionSkillRouterCustom,
     });
     const skillTok = String(injectionSkillRouterCustom || "").trim()
-      ? Math.max(1, Math.round(String(injectionSkillRouterCustom).trim().length / 4))
+      ? estimateTokens(String(injectionSkillRouterCustom).trim(), upstreamModel)
       : 0;
     xf.push(
       `GLOBAL:${injectionRegisterLevel || "none"}+` +
