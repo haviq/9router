@@ -368,9 +368,16 @@ export async function buildModelsList(kindFilter, options = {}) {
   // cross-instance recursive loops.
   const skipDynamicFetch = options.skipDynamicFetch === true;
   let connections = [];
+  // Count DB rows BEFORE the isActive filter. Combo health needs to know
+  // whether the DB answered at all, not whether any provider is switched on:
+  // switching every provider off is a valid state, and in it every combo is
+  // unreachable. Deriving this from the filtered array would read "0 active"
+  // as "DB unavailable" and expose dead combos again.
+  let rawConnectionCount = 0;
   try {
-    connections = await getProviderConnections();
-    connections = connections.filter(c => c.isActive !== false);
+    const rows = await getProviderConnections();
+    rawConnectionCount = Array.isArray(rows) ? rows.length : 0;
+    connections = (Array.isArray(rows) ? rows : []).filter(c => c.isActive !== false);
   } catch (e) {
     console.log("Could not fetch providers, returning all models");
   }
@@ -464,7 +471,7 @@ export async function buildModelsList(kindFilter, options = {}) {
   // DB unavailable → we have no connection rows to judge liveness by, so fall
   // back to the static catalog and expose everything rather than hiding models
   // the operator may well be able to use.
-  const canJudgeComboHealth = connections.length > 0;
+  const canJudgeComboHealth = rawConnectionCount > 0;
 
   const comboByName = Object.fromEntries(combos.map((c) => [c.name, c.models]));
   const comboAliveCache = new Map();
@@ -541,7 +548,7 @@ export async function buildModelsList(kindFilter, options = {}) {
   if (connections.length === 0) {
     // DB unavailable -> return static models, filtered by per-model kind
     for (const [alias, providerModels] of Object.entries(PROVIDER_MODELS)) {
-      const providerId = aliasToProviderId[alias] || alias;
+      const providerId = ALIAS_TO_ID[alias] || alias;
       if (!providerMatchesKinds(providerId, kindFilter, customNodeKinds)) continue;
       for (const model of providerModels) {
         if (!kindFilter.includes(modelKind(model))) continue;
