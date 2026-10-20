@@ -192,6 +192,102 @@ export async function getRequestDetails(filter = {}) {
   };
 }
 
+/**
+ * Per-provider health summary over a rolling window.
+ *
+ * Counts come from SQL (indexed columns only), latency from a bounded sample
+ * of the most recent rows: latency lives inside the JSON `data` blob, so
+ * parsing every row in the window would mean deserialising hundreds of MB.
+ * The sample is capped and the summary says so, so the UI never presents a
+ * sampled p50 as if it covered the whole window.
+ *
+ * @param {object} opts
+ * @param {number} [opts.hours=24]  Rolling window in hours.
+ * @param {number} [opts.latencySample=400] Max rows parsed for latency.
+ */
+export async function getProviderHealth({ hours = 24, latencySample = 400 } = {}) {
+  const db = await getAdapter();
+  const since = new Date(Date.now() - Math.max(1, hours) * 3600_000).toISOString();
+
+  // Cheap, index-backed aggregation. status is the only failure signal that
+  // is a real column; everything else needs the JSON blob.
+  const rows = db.all(
+    `SELECT provider, status, COUNT(*) AS c
+       FROM requestDetails
+      WHERE timestamp >= ? AND provider IS NOT NULL
+      GROUP BY provider, status`,
+    [since]
+  );
+
+  const byProvider = new Map();
+  for (const row of rows) {
+    const id = row.provider;
+    if (!byProvider.has(id)) {
+      byProvider.set(id, { provider: id, total: 0, ok: 0, failed: 0, byStatus: {} });
+    }
+    const entry = byProvider.get(id);
+    const count = Number(row.c) || 0;
+    const status = row.status || "unknown";
+    entry.total += count;
+    entry.byStatus[status] = (entry.byStatus[status] || 0) + count;
+    if (status === "success") entry.ok += count;
+    else entry.failed += count;
+  }
+
+  // Bounded latency sample. ORDER BY timestamp DESC walks idx_rd_ts backwards.
+  const sampleRows = db.all(
+    `SELECT provider, data
+       FROM requestDetails
+      WHERE timestamp >= ? AND provider IS NOT NULL
+      ORDER BY timestamp DESC
+      LIMIT ?`,
+    [since, Math.max(1, Math.min(5000, latencySample))]
+  );
+
+  const latencies = new Map();
+  let sampled = 0;
+  for (const row of sampleRows) {
+    const detail = parseJson(row.data, null);
+    const total = Number(detail?.latency?.total);
+    if (!Number.isFinite(total) || total <= 0) continue;
+    sampled++;
+    if (!latencies.has(row.provider)) latencies.set(row.provider, []);
+    latencies.get(row.provider).push(total);
+  }
+
+  const percentile = (sorted, p) => {
+    if (!sorted.length) return null;
+    const idx = Math.min(sorted.length - 1, Math.max(0, Math.ceil((p / 100) * sorted.length) - 1));
+    return sorted[idx];
+  };
+
+  const providers = [...byProvider.values()].map((entry) => {
+    const list = (latencies.get(entry.provider) || []).slice().sort((a, b) => a - b);
+    return {
+      ...entry,
+      successRate: entry.total > 0 ? entry.ok / entry.total : null,
+      latency: {
+        samples: list.length,
+        p50: percentile(list, 50),
+        p95: percentile(list, 95),
+        max: list.length ? list[list.length - 1] : null,
+      },
+    };
+  });
+
+  providers.sort((a, b) => b.total - a.total);
+
+  return {
+    windowHours: hours,
+    since,
+    generatedAt: new Date().toISOString(),
+    sampledRows: sampled,
+    latencySampleCap: latencySample,
+    latencyCoverage: sampleRows.length > 0 ? sampled / sampleRows.length : null,
+    providers,
+  };
+}
+
 export async function getDistinctProviders() {
   const db = await getAdapter();
   const rows = db.all(`SELECT DISTINCT provider FROM requestDetails WHERE provider IS NOT NULL ORDER BY provider ASC`);
