@@ -9,6 +9,8 @@ import { Card, Button, Modal, Input, CardSkeleton, ModelSelectModal, ConfirmModa
 import { useCopyToClipboard } from "@/shared/hooks/useCopyToClipboard";
 import { useModelCaps } from "@/shared/hooks/useModelCaps";
 import { aggregateComboCapabilities } from "open-sse/providers/capabilities.js";
+import { getProviderAlias } from "@/shared/constants/providers";
+import { PROVIDER_ID_TO_ALIAS } from "@/shared/constants/models";
 
 // Validate combo name: only a-z, A-Z, 0-9, -, _
 const VALID_NAME_REGEX = /^[a-zA-Z0-9_.\-]+$/;
@@ -486,7 +488,8 @@ export default function CombosPage() {
           <div className="flex flex-col gap-3">
             {(() => {
           const comboByName = Object.fromEntries(combos.map(c => [c.name, c.models]));
-          return combos.map(combo => <ComboCard key={combo.id} combo={combo} getCaps={getCaps} comboByName={comboByName} activeProviders={activeProviders} copied={copied} onCopy={copy} onEdit={() => setEditingCombo(combo)} onDelete={() => handleDelete(combo.id)} strategy={comboStrategies[combo.name] || {}} onSetStrategy={patch => handleSetComboStrategy(combo.name, patch)} selected={selectedIds.includes(combo.id)} onToggleSelect={() => toggleSelect(combo.id)} />);
+          const liveAliases = buildLiveAliases(activeProviders);
+          return combos.map(combo => <ComboCard key={combo.id} combo={combo} getCaps={getCaps} comboByName={comboByName} activeProviders={activeProviders} liveAliases={liveAliases} copied={copied} onCopy={copy} onEdit={() => setEditingCombo(combo)} onDelete={() => handleDelete(combo.id)} strategy={comboStrategies[combo.name] || {}} onSetStrategy={patch => handleSetComboStrategy(combo.name, patch)} selected={selectedIds.includes(combo.id)} onToggleSelect={() => toggleSelect(combo.id)} />);
         })()}
           </div>
         </div>}
@@ -511,11 +514,55 @@ function fmtK(n) {
   }
   return `${Math.round(n / 1000)}k`;
 }
+// A combo is only a stored list of model ids — it has no connection of its
+// own. Switching a provider off leaves the combo advertising models that can
+// never route, and the request fails at call time instead of here. The API
+// already drops dead combos from /v1/models; this mirrors that judgement in
+// the UI so the operator sees which seat is the problem.
+function buildLiveAliases(activeProviders = []) {
+  const live = new Set();
+  for (const conn of activeProviders) {
+    const providerId = conn?.provider;
+    if (!providerId) continue;
+    const alias = (
+      conn?.providerSpecificData?.prefix ||
+      getProviderAlias(providerId) ||
+      PROVIDER_ID_TO_ALIAS[providerId] ||
+      providerId
+    ).trim();
+    live.add(alias);
+    live.add(PROVIDER_ID_TO_ALIAS[providerId] || providerId);
+    live.add(providerId);
+  }
+  return live;
+}
+
+// A seat is live when its "alias/model" prefix belongs to an active provider.
+// Web search/fetch pseudo-models inherit the alias liveness the same way.
+function seatIsLive(seat, liveAliases) {
+  const raw = String(seat || "").trim();
+  if (!raw) return false;
+  const slash = raw.indexOf("/");
+  if (slash === -1) return true; // nested combo name, resolved by the caller
+  return liveAliases.has(raw.slice(0, slash));
+}
+
+function comboDeadSeats(combo, liveAliases, comboByName = {}) {
+  const seats = Array.isArray(combo?.models) ? combo.models : [];
+  if (!seats.length) return [];
+  return seats.filter((seat) => {
+    const raw = String(seat || "").trim();
+    if (raw && comboByName[raw]) return false; // nested combo, not a provider seat
+    return !seatIsLive(raw, liveAliases);
+  });
+}
+
 function ComboCard({
   combo,
   getCaps,
   comboByName = {},
   activeProviders = [],
+  liveAliases = null,
   copied,
   onCopy,
   onEdit,
@@ -533,6 +580,13 @@ function ComboCard({
   // generic patterns and under-report the limits. getCaps carries the server's
   // answer for /api/models.
   const comboCaps = aggregateComboCapabilities(combo.models, comboByName, getCaps);
+  // Only judge liveness when the provider list actually loaded: an empty
+  // array means the fetch failed or has not landed yet, and painting every
+  // seat dead on that basis would be a lie.
+  const canJudge = Array.isArray(liveAliases) && liveAliases.size > 0;
+  const deadSeats = canJudge ? comboDeadSeats(combo, liveAliases, comboByName) : [];
+  const deadSet = new Set(deadSeats);
+  const allDead = canJudge && combo.models.length > 0 && deadSeats.length === combo.models.length;
   return <Card padding="sm" className={`group ${selected ? "ring-1 ring-primary/40 bg-primary/[0.03]" : ""}`}>
       <div className="flex min-w-0 flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div className="flex min-w-0 flex-1 items-start gap-3 sm:items-center">
@@ -543,10 +597,25 @@ function ComboCard({
             <span className="material-symbols-outlined text-primary text-[18px]">layers</span>
           </div>
           <div className="min-w-0 flex-1">
-            <code className="block truncate font-mono text-sm font-medium">{combo.name}</code>
+            <div className="flex min-w-0 items-center gap-1.5">
+              <code className="block truncate font-mono text-sm font-medium">{combo.name}</code>
+              {deadSeats.length > 0 && (
+                <span
+                  className={`shrink-0 rounded px-1.5 py-0.5 text-[10px] font-semibold ${allDead ? "bg-red-500/15 text-red-500" : "bg-amber-500/15 text-amber-600 dark:text-amber-400"}`}
+                  title={
+                    allDead
+                      ? "Every provider this combo points at is switched off — it can never route"
+                      : `${deadSeats.length} seat(s) point at switched-off providers`
+                  }
+                >
+                  {allDead ? "unreachable" : `${deadSeats.length} dead`}
+                </span>
+              )}
+            </div>
             <div className="mt-1 flex min-w-0 flex-wrap items-center gap-1">
-              {combo.models.length === 0 ? <span className="text-xs text-text-muted italic">No models</span> : combo.models.slice(0, 3).map((model, index) => <code key={index} className="inline-flex items-center gap-1 rounded bg-black/5 px-1.5 py-0.5 font-mono text-xs text-text-muted dark:bg-white/5">
+              {combo.models.length === 0 ? <span className="text-xs text-text-muted italic">No models</span> : combo.models.slice(0, 3).map((model, index) => <code key={index} title={deadSet.has(model) ? "Provider switched off — this seat cannot route" : undefined} className={`inline-flex items-center gap-1 rounded px-1.5 py-0.5 font-mono text-xs ${deadSet.has(model) ? "bg-red-500/10 text-red-500 line-through decoration-red-500/60" : "bg-black/5 text-text-muted dark:bg-white/5"}`}>
                     <span>{model}</span>
+                    {deadSet.has(model) && <span className="material-symbols-outlined text-[12px] no-underline">link_off</span>}
                     <CapacityBadges caps={comboByName[model] ? aggregateComboCapabilities(comboByName[model], comboByName, getCaps) : getCaps?.(model)} />
                   </code>)}
               {combo.models.length > 3 && <span className="text-[10px] text-text-muted">+{combo.models.length - 3} more</span>}
