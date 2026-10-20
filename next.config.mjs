@@ -13,6 +13,18 @@ const proxyClientMaxBodySize = process.env.NINEROUTER_PROXY_CLIENT_MAX_BODY_SIZE
 const nextConfig = {
   distDir: process.env.NEXT_DIST_DIR || ".next",
   output: "standalone",
+  // Dev-only: Next blocks /_next/* (HMR + client chunks) when the request
+  // arrives from a host it does not recognise, which is every cloudflared /
+  // ngrok tunnel. Without this the page shell renders and then sits on
+  // "Loading..." forever because the client bundle is refused. Wildcards keep
+  // it working across quick-tunnel hostnames, which change on every restart.
+  allowedDevOrigins: [
+    "*.trycloudflare.com",
+    "*.ngrok-free.app",
+    "*.ngrok.io",
+    "localhost",
+    "127.0.0.1",
+  ],
   // `open` must stay external. It derives its own directory from `import.meta.url`, and
   // webpack replaces that with the absolute path of the BUILD machine as a string literal.
   // A release built on macOS therefore ships `file:///Users/.../open/index.js`, which
