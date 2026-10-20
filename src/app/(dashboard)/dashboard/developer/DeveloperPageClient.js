@@ -18,6 +18,7 @@ import { translate } from "@/i18n/runtime";
 import { cn } from "@/shared/utils/cn";
 import { MODEL_ID_PAYLOADS, SUITE_ORDER, SUITE_LABELS } from "@/shared/constants/modelIdSuite/payloads";
 import ToolkitClient from "./ToolkitClient";
+import BenchmarkClient from "./BenchmarkClient";
 import TransparencyClient from "./TransparencyClient";
 
 const STORAGE_KEYS = {
@@ -1688,6 +1689,7 @@ export default function DeveloperPageClient() {
             { id: "ab", label: "A/B", icon: "compare_arrows" },
             { id: "council", label: "Council", icon: "diversity_3" },
             { id: "toolkit", label: "Toolkit", icon: "build" },
+            { id: "benchmark", label: "Benchmark", icon: "speed" },
             { id: "modelid", label: "Model-ID", icon: "fingerprint" },
             { id: "transparency", label: "Transparency", icon: "visibility" },
           ].map((tab) => (
@@ -1834,7 +1836,9 @@ export default function DeveloperPageClient() {
         )}
       </details>
 
-      {mode === "toolkit" ? (
+      {mode === "benchmark" ? (
+        <BenchmarkClient modelOptions={allModels} />
+      ) : mode === "toolkit" ? (
         <ToolkitClient setDraft={setDraft} />
       ) : mode === "modelid" ? (
         <div className="flex flex-col gap-3 rounded-xl border border-border bg-surface/40 p-4">
