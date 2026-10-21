@@ -87,6 +87,9 @@ export default function CombosPage() {
   const [combos, setCombos] = useState([]);
   const [loading, setLoading] = useState(true);
   const [showCreateModal, setShowCreateModal] = useState(false);
+  // Heal is a two-step flow: dry-run first, then an explicit apply.
+  const [healPreview, setHealPreview] = useState(null);
+  const [healBusy, setHealBusy] = useState(false);
   const [editingCombo, setEditingCombo] = useState(null);
   const [activeProviders, setActiveProviders] = useState([]);
   const [comboStrategies, setComboStrategies] = useState({});
@@ -227,6 +230,37 @@ export default function CombosPage() {
       console.log("Error updating capacity adapter:", error);
     }
   }
+  async function runHeal(dryRun) {
+    setHealBusy(true);
+    try {
+      const res = await fetch("/api/combos/heal", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ dryRun })
+      });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(body?.error || `HTTP ${res.status}`);
+
+      if (dryRun) {
+        setHealPreview(body);
+        return;
+      }
+
+      setHealPreview(null);
+      await fetchData();
+    } catch (e) {
+      setConfirmState({
+        title: "Heal failed",
+        message: e?.message || "Could not heal combos",
+        confirmLabel: "OK",
+        danger: true,
+        onConfirm: () => setConfirmState(null)
+      });
+    } finally {
+      setHealBusy(false);
+    }
+  }
+
   async function handleCreate(data) {
     try {
       const res = await fetch("/api/combos", {
@@ -429,6 +463,17 @@ export default function CombosPage() {
           </p>
         </div>
         <div className="flex w-full flex-col gap-2 sm:w-auto sm:items-stretch">
+          <Button
+            variant="secondary"
+            icon="healing"
+            loading={healBusy}
+            disabled={healBusy}
+            onClick={() => runHeal(true)}
+            className="w-full whitespace-nowrap sm:w-auto"
+            title="Preview combos that point at switched-off providers"
+          >
+            Heal Combos
+          </Button>
           <Button icon="add" onClick={() => setShowCreateModal(true)} className="w-full sm:w-auto whitespace-nowrap">
             Create Combo
           </Button>
@@ -503,6 +548,17 @@ export default function CombosPage() {
       {editingCombo && <ComboFormModal key={editingCombo.id} isOpen={!!editingCombo} combo={editingCombo} onClose={() => setEditingCombo(null)} onSave={data => handleUpdate(editingCombo.id, data)} activeProviders={activeProviders} />}
 
       {/* Confirm (delete / generate presets) */}
+      <ConfirmModal
+        isOpen={!!healPreview}
+        onClose={() => !healBusy && setHealPreview(null)}
+        onConfirm={() => runHeal(false)}
+        title="Heal Combos"
+        message={healPreviewMessage(healPreview)}
+        confirmText={healPreview?.summary?.combosHealed ? "Remove dead seats" : "Close"}
+        variant={healPreview?.summary?.combosHealed ? "danger" : "primary"}
+        loading={healBusy}
+      />
+
       <ConfirmModal isOpen={!!confirmState} onClose={() => !confirmState?.loading && setConfirmState(null)} onConfirm={confirmState?.onConfirm} title={confirmState?.title || "Confirm"} message={confirmState?.message} confirmText={confirmState?.confirmText || "Confirm"} variant={confirmState?.variant || "danger"} loading={!!confirmState?.loading} />
     </div>;
 }
@@ -555,6 +611,31 @@ function comboDeadSeats(combo, liveAliases, comboByName = {}) {
     if (raw && comboByName[raw]) return false; // nested combo, not a provider seat
     return !seatIsLive(raw, liveAliases);
   });
+}
+
+// Preview summary for the heal confirmation. Written as a sentence rather than
+// a table because ConfirmModal renders a string: the operator needs to see how
+// many rows would change and which, not a wall of JSON.
+function healPreviewMessage(preview) {
+  if (!preview) return "";
+  const s = preview.summary || {};
+  if (!s.combosHealed && !s.combosSkipped) {
+    return "Nothing to heal — every combo seat points at an active provider.";
+  }
+  const parts = [];
+  if (s.combosHealed) {
+    const lines = preview.healed
+      .slice(0, 8)
+      .map((h) => `\u2022 ${h.name}: ${h.before} \u2192 ${h.after}`)
+      .join("\n");
+    const more = preview.healed.length > 8 ? `\n...and ${preview.healed.length - 8} more` : "";
+    parts.push(`${s.combosHealed} combo(s) would lose ${s.seatsRemoved} dead seat(s):\n${lines}${more}`);
+  }
+  if (s.combosSkipped) {
+    const lines = preview.skipped.map((k) => `\u2022 ${k.name}`).join("\n");
+    parts.push(`${s.combosSkipped} combo(s) left alone \u2014 every seat unreachable:\n${lines}`);
+  }
+  return parts.join("\n\n");
 }
 
 function ComboCard({
