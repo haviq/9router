@@ -58,13 +58,28 @@ payloadRunner -> DEFAULT_RUNS, MAX_RUNS, resolvePayloadText,
 
 ### Belum terverifikasi — jujur
 
-**1. Production build tidak selesai di container ini.**
+**1. Production build — SELESAI, tapi bukan di container ini.**
 
-`npm run build` butuh ~7GB RAM. Container sisa ~1.9GB. Build mati sebelum menulis log. Ini batas environment, bukan kode — tapi artinya **belum ada bukti bundle production compile**. Perlu dijalankan di mesin/VPS dengan RAM cukup:
+`npm run build` di container agent mati dengan `Killed` (OOM: butuh ~7GB, sisa ~1.9GB). Build **berhasil** di VPS `43.156.71.31` setelah menambah 8GB swap:
 
-```bash
-npm run build
 ```
+=== NPM INSTALL END rc=0  05:54:03 ===
+=== BUILD START          05:54:03 ===
+✓ Compiled successfully in 78s
+=== BUILD END   rc=0    05:56:17 ===
+```
+
+Artefak terverifikasi:
+
+```
+.next/BUILD_ID            4eYPTuZFhVDzfCiL20HyO
+.next size                705M
+.next/standalone/         custom-server.js, server.js, node_modules
+.next/server/app/api/combos/heal/route.js                  ada
+.next/server/app/api/developer/payload-benchmark/route.js  ada
+```
+
+Catatan environment VPS: npm registry di-set ke `mirrors.tencentyun.com` dan **hang total** (3+ menit, CPU 0, log 0 byte). Diperbaiki dengan `npm config set registry https://registry.npmjs.org/`. Ini jebakan deployment yang perlu diketahui.",
 
 **2. `src/lib/comboHeal.js` tidak bisa di-import lewat `node` mentah.**
 
