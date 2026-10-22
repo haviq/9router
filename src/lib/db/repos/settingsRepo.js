@@ -73,6 +73,12 @@ const DEFAULT_SETTINGS = {
   // Appended to the system message as its own block when injectionEnabled
   // is true and this field is non-empty.
   injectionSkillRouterCustom: "",
+  // Per-model system prompts: a rule list (pattern + prompt) resolved by the
+  // upstream model id. Independent of the global injection slots above — a
+  // matching rule appends its own block and never rewrites them.
+  injectionModelPromptsEnabled: false,
+  injectionModelPromptRules: [],
+
   // Optional carrier wrapping — a second "carrier" payload that auto-wraps
   // the main payload into its slot when enabled. Off by default (wrapping is
   // not always more effective). The carrier text is customizable.

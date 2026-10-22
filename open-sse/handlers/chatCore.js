@@ -27,6 +27,7 @@ import { injectCaveman } from "../rtk/caveman.js";
 import { injectPonytail } from "../rtk/ponytail.js";
 import { injectGlobal } from "../payload/globalInject.js";
 import { estimateGlobalInjection, estimateTokens, formatTok } from "../rtk/tokenEstimate.js";
+import { resolveModelPrompt } from "../payload/modelPrompts.js";
 import { formatRtkLog } from "../rtk/index.js";
 import { compressMessagesAuto } from "../rtk/sidecar.js";
 import { compressWithHeadroom, formatHeadroomLog, formatHeadroomSizeLog, isHeadroomPhantomSavings } from "../rtk/headroom.js";
@@ -64,7 +65,7 @@ export function stripContinuityFields(body) {
   return body;
 }
 
-export async function handleChatCore({ body, modelInfo, credentials, log, onCredentialsRefreshed, onRequestSuccess, onDisconnect, clientRawRequest, connectionId, userAgent, apiKey, ccFilterNaming, rtkEnabled, headroomEnabled, headroomUrl, headroomCompressUserMessages, headroomTimeoutMs, cavemanEnabled, cavemanLevel, ponytailEnabled, ponytailLevel, injectionEnabled, injectionRegisterLevel, injectionRegisterCustom, injectionIdentity, injectionGodmodeLevel, injectionGodmodeCustom, injectionCarrierEnabled, injectionCarrierLevel, injectionCarrierCustom, injectionSkillRouterCustom, pxpipeEnabled, pxpipeMinChars, pxpipeTimeoutMs, pxpipeTransform, onPxpipeEvent, sourceFormatOverride, providerThinking, providerOverrides }) {
+export async function handleChatCore({ body, modelInfo, credentials, log, onCredentialsRefreshed, onRequestSuccess, onDisconnect, clientRawRequest, connectionId, userAgent, apiKey, ccFilterNaming, rtkEnabled, headroomEnabled, headroomUrl, headroomCompressUserMessages, headroomTimeoutMs, cavemanEnabled, cavemanLevel, ponytailEnabled, ponytailLevel, injectionEnabled, injectionRegisterLevel, injectionRegisterCustom, injectionIdentity, injectionGodmodeLevel, injectionGodmodeCustom, injectionCarrierEnabled, injectionCarrierLevel, injectionCarrierCustom, injectionSkillRouterCustom, injectionModelPromptsEnabled, injectionModelPromptRules, pxpipeEnabled, pxpipeMinChars, pxpipeTimeoutMs, pxpipeTransform, onPxpipeEvent, sourceFormatOverride, providerThinking, providerOverrides }) {
   const { provider, model } = modelInfo;
   const requestStartTime = Date.now();
   // Stable per-session color so all lines of one CLI conversation share a tag
@@ -390,6 +391,24 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
       ` (est ≈${formatTok(est.total + skillTok)}tok · reg ${formatTok(est.register)} + payload ${formatTok(est.payload)}` +
       ` · car ${formatTok(est.carrier || 0)} · ptr ${formatTok(skillTok)})`
     );
+  }
+
+  // PER-MODEL SYSTEM PROMPT: one rule matched by the upstream model id.
+  //
+  // Deliberately independent of injectionActive: an operator may want a model
+  // prompt without the global register/godmode slots, and the reverse. The
+  // x-9router-inject: off opt-out still suppresses it, because that header is
+  // the documented "send this request clean" escape hatch.
+  if (injectionModelPromptsEnabled && !injectionOptedOut) {
+    const resolved = resolveModelPrompt(upstreamModel, {
+      enabled: true,
+      rules: injectionModelPromptRules,
+    });
+    if (resolved.prompt) {
+      injectSystemPrompt(translatedBody, finalFormat, resolved.prompt);
+      const mpTok = estimateTokens(resolved.prompt, upstreamModel);
+      xf.push(`MODELPROMPT:${resolved.ruleId} (≈${formatTok(mpTok)}tok)`);
+    }
   }
 
   // PXPIPE: image bulky context (Claude-format bodies only), last saver before dispatch

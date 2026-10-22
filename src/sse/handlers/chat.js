@@ -367,6 +367,13 @@ async function handleSingleModelChat(
         typeof chatSettings.injectionCarrierCustom === "string" ? chatSettings.injectionCarrierCustom : "",
       injectionSkillRouterCustom:
         typeof chatSettings.injectionSkillRouterCustom === "string" ? chatSettings.injectionSkillRouterCustom : "",
+      // Per-model system prompts: a rule list resolved by the upstream model.
+      // Independent of the global slots above — a matching rule appends its
+      // own block and never rewrites register/godmode/skill-router.
+      injectionModelPromptsEnabled: !!chatSettings.injectionModelPromptsEnabled,
+      injectionModelPromptRules: Array.isArray(chatSettings.injectionModelPromptRules)
+        ? chatSettings.injectionModelPromptRules
+        : [],
       pxpipeEnabled: !!chatSettings.pxpipeEnabled,
       pxpipeMinChars: chatSettings.pxpipeMinChars,
       pxpipeTimeoutMs: chatSettings.pxpipeTimeoutMs,
