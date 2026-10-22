@@ -45,6 +45,35 @@ export default function ModelPromptsClient() {
       } finally {
         if (!cancelled) setLoading(false);
       }
+
+      // Model list for the pattern picker. /v1/models is authoritative for
+      // what can actually route but needs an API key; /api/models is the
+      // dashboard-authenticated catalog and always answers. Try live first,
+      // fall back so the picker is never an empty dropdown.
+      try {
+        let ids = [];
+        const live = await fetch("/v1/models", { cache: "no-store" });
+        if (live.ok) {
+          const body = await live.json().catch(() => ({}));
+          ids = (Array.isArray(body?.data) ? body.data : [])
+            .map((m) => m?.id)
+            .filter((id) => typeof id === "string" && id.trim());
+        }
+        if (!ids.length) {
+          const catalog = await fetch("/api/models", { cache: "no-store" });
+          if (catalog.ok) {
+            const body = await catalog.json().catch(() => ({}));
+            ids = (Array.isArray(body?.models) ? body.models : [])
+              .map((m) => m?.routedModel || m?.fullModel || m?.model)
+              .filter((id) => typeof id === "string" && id.trim());
+          }
+        }
+        if (cancelled) return;
+        setLiveModels(Array.from(new Set(ids)).sort());
+        setModelsError(ids.length ? "" : "No models found — connect a provider first");
+      } catch (e) {
+        if (!cancelled) setModelsError(e?.message || "Could not load models");
+      }
     })();
     return () => {
       cancelled = true;
