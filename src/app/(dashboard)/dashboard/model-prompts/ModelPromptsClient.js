@@ -24,6 +24,11 @@ export default function ModelPromptsClient() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [saved, setSaved] = useState(false);
+  // Live routable models, same source the Developer picker uses: /v1/models
+  // never advertises a model the operator cannot reach, so the dropdown
+  // cannot offer a pattern that will never match anything.
+  const [liveModels, setLiveModels] = useState([]);
+  const [modelsError, setModelsError] = useState("");
 
   useEffect(() => {
     let cancelled = false;
@@ -172,9 +177,32 @@ export default function ModelPromptsClient() {
                   <input
                     value={rule.pattern || ""}
                     onChange={(e) => updateRule(index, { pattern: e.target.value })}
+                    list={`live-models-${index}`}
                     placeholder="pattern — claude, gpt-5, /^qwen-/"
                     className="h-8 min-w-[220px] flex-1 rounded-lg border border-border bg-surface-2 px-2 font-mono text-xs text-text-main"
                   />
+                  <datalist id={`live-models-${index}`}>
+                    {liveModels.map((id) => (
+                      <option key={id} value={id} />
+                    ))}
+                  </datalist>
+                  <select
+                    value=""
+                    onChange={(e) => {
+                      if (e.target.value) updateRule(index, { pattern: e.target.value });
+                    }}
+                    className="h-8 max-w-[220px] rounded-lg border border-border bg-surface-2 px-2 text-xs text-text-main"
+                    title="Pick a live model — /v1/models only lists models you can actually reach"
+                  >
+                    <option value="">
+                      {liveModels.length ? `Pick live model (${liveModels.length})` : "No live models"}
+                    </option>
+                    {liveModels.map((id) => (
+                      <option key={id} value={id}>
+                        {id}
+                      </option>
+                    ))}
+                  </select>
                   {rule.pattern && !rule.prompt?.trim() && (
                     <Badge variant="warning" size="sm">
                       no prompt
