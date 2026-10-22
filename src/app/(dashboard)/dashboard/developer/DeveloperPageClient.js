@@ -375,11 +375,6 @@ export default function DeveloperPageClient() {
   // /api/settings call the injection state already uses.
   const [fallbackStrategy, setFallbackStrategy] = useState("fill-first");
 
-  // Per-model system prompts: a rule list resolved by the upstream model id.
-  // Independent of the global injection slots — a matching rule appends its
-  // own block and never rewrites register/godmode/skill-router.
-  const [mpEnabled, setMpEnabled] = useState(false);
-  const [mpRules, setMpRules] = useState([]);
 
   const [hasRestored] = useState(() => {
     try {
@@ -478,8 +473,6 @@ export default function DeveloperPageClient() {
         setGodmodeLevel(settings.injectionGodmodeLevel || settings.godmodeLevel || "classic");
         setGodmodeCustom(typeof settings.injectionGodmodeCustom === "string" ? settings.injectionGodmodeCustom : (typeof settings.godmodeCustom === "string" ? settings.godmodeCustom : ""));
         if (settings.fallbackStrategy) setFallbackStrategy(settings.fallbackStrategy);
-        setMpEnabled(!!settings.injectionModelPromptsEnabled);
-        setMpRules(Array.isArray(settings.injectionModelPromptRules) ? settings.injectionModelPromptRules : []);
       })
       .catch(() => {})
       .finally(() => {
@@ -512,35 +505,6 @@ export default function DeveloperPageClient() {
   function toggleInject(value) {
     setInjectEnabled(value);
     patchSetting({ injectionEnabled: value });
-  }
-
-  // Per-model prompt rule editing. Local state updates first so typing never
-  // waits on the network; the PATCH is fire-and-forget like every other
-  // settings write on this page.
-  function saveModelPromptRules(next) {
-    setMpRules(next);
-    patchSetting({ injectionModelPromptRules: next });
-  }
-
-  function toggleModelPrompts(value) {
-    setMpEnabled(value);
-    patchSetting({ injectionModelPromptsEnabled: value });
-  }
-
-  function updateRule(index, patch) {
-    const next = mpRules.map((r, i) => (i === index ? { ...r, ...patch } : r));
-    saveModelPromptRules(next);
-  }
-
-  function addRule() {
-    saveModelPromptRules([
-      ...mpRules,
-      { id: `rule-${Date.now()}`, pattern: "", prompt: "", enabled: true },
-    ]);
-  }
-
-  function removeRule(index) {
-    saveModelPromptRules(mpRules.filter((_, i) => i !== index));
   }
 
   useEffect(() => {
@@ -1813,91 +1777,6 @@ export default function DeveloperPageClient() {
         </a>
       </div>
 
-      {/* Per-model system prompts — a rule list resolved by the upstream
-          model id. Deliberately separate from the Global Injection card:
-          a model prompt can run with register/godmode off, and the reverse. */}
-      <div className="flex flex-col gap-2 rounded-xl border border-border bg-surface/40 p-3">
-        <div className="flex flex-wrap items-center gap-3">
-          <span
-            className={cn(
-              "material-symbols-outlined text-[20px]",
-              mpEnabled ? "text-primary" : "text-text-muted"
-            )}
-          >
-            rule
-          </span>
-          <div className="flex min-w-[220px] flex-1 flex-col">
-            <span className="text-sm font-semibold text-text-main">Per-Model System Prompts</span>
-            <span className="text-xs text-text-muted">
-              {mpEnabled
-                ? `ON — ${mpRules.length} rule(s). First match by upstream model id wins.`
-                : "OFF — no model prompt is appended."}
-            </span>
-          </div>
-          <button
-            onClick={() => toggleModelPrompts(!mpEnabled)}
-            className={cn(
-              "h-8 rounded-lg px-4 text-xs font-semibold transition-colors",
-              mpEnabled
-                ? "bg-primary text-white"
-                : "border border-border bg-surface-2 text-text-main hover:bg-surface"
-            )}
-          >
-            {mpEnabled ? "Disable" : "Enable"}
-          </button>
-          <button
-            onClick={addRule}
-            disabled={mpRules.length >= 24}
-            className="h-8 rounded-lg border border-border bg-surface-2 px-4 text-xs font-semibold text-text-main transition-colors hover:bg-surface disabled:opacity-40"
-          >
-            + Add rule
-          </button>
-        </div>
-
-        {mpRules.length === 0 ? (
-          <p className="text-xs text-text-muted">
-            No rules yet. Add one with a pattern like <code className="font-mono">claude</code>,
-            <code className="font-mono">gpt-5</code>, or a regex like
-            <code className="font-mono">/^qwen-/</code>.
-          </p>
-        ) : (
-          <div className="flex flex-col gap-2">
-            {mpRules.map((r, i) => (
-              <div key={r.id || i} className="flex flex-col gap-1.5 rounded-lg border border-border-subtle p-2">
-                <div className="flex flex-wrap items-center gap-2">
-                  <input
-                    type="checkbox"
-                    checked={r.enabled !== false}
-                    onChange={(e) => updateRule(i, { enabled: e.target.checked })}
-                    className="h-4 w-4 rounded border-gray-300 text-primary"
-                    title="Enable this rule"
-                  />
-                  <input
-                    value={r.pattern || ""}
-                    onChange={(e) => updateRule(i, { pattern: e.target.value })}
-                    placeholder="pattern — claude, gpt-5, /^qwen-/"
-                    className="h-8 min-w-[200px] flex-1 rounded-lg border border-border bg-surface px-2 font-mono text-xs text-text-main"
-                  />
-                  <button
-                    onClick={() => removeRule(i)}
-                    className="rounded px-2 py-1 text-xs font-semibold text-red-500 transition-colors hover:bg-red-500/10"
-                    title="Remove rule"
-                  >
-                    Remove
-                  </button>
-                </div>
-                <textarea
-                  value={r.prompt || ""}
-                  onChange={(e) => updateRule(i, { prompt: e.target.value })}
-                  placeholder="System prompt to append when this rule matches"
-                  rows={3}
-                  className="w-full resize-y rounded-lg border border-border bg-surface px-2 py-1.5 font-mono text-xs text-text-main"
-                />
-              </div>
-            ))}
-          </div>
-        )}
-      </div>
       <div className="grid grid-cols-1 xl:grid-cols-3 gap-3">
         <label className="flex flex-col gap-1 text-xs text-text-muted">
           Temperature

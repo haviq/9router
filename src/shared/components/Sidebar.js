@@ -29,6 +29,7 @@ const navItems = [
   { href: "/dashboard/health", label: "Provider Health", icon: "monitor_heart" },
   { href: "/dashboard/quota", label: "Quota Tracker", icon: "data_usage" },
   { href: "/dashboard/token-saver", label: "Token Saver", icon: "savings" },
+  { href: "/dashboard/model-prompts", label: "Model Prompts", icon: "rule" },
   // { href: "/dashboard/pxpipe", label: "PXPIPE", icon: "image" },
   { href: "/dashboard/cli-tools", label: "CLI Tools", icon: "terminal" },
   { href: "/dashboard/developer", label: "Developer", icon: "developer_mode" },
