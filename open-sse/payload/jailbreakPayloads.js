@@ -22,6 +22,7 @@ import os from "node:os";
 import { readFileSync, existsSync, readdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { SYAD_COLLECTION_PREFIX, splitSyadagenticTemplates } from "./syadagenticTemplates.js";
 
 // import.meta.url is only valid in the source tree. Under a Next.js
 // standalone bundle the chunk is minified and import.meta.url may point at a
@@ -85,6 +86,18 @@ function resolveBaseDir() {
   return REPO_ROOT;
 }
 const BASE_DIR = resolveBaseDir();
+// Same extraction target resolveBaseDir() prefers, kept separate so the split
+// collection can look in both places without re-deriving the data dir.
+const DATA_PAYLOAD_DIR = (() => {
+  try {
+    const d = process.env["DATA_DIR"] || (process.platform === "win32"
+      ? join(process.env["APPDATA"] || join(os.homedir(), "AppData", "Roaming"), "9router")
+      : join(os.homedir(), ".9router"));
+    return join(d, "payloads");
+  } catch {
+    return join(BASE_DIR, "__no_data_dir__");
+  }
+})();
 
 // Categories: how payloads are grouped in the developer-page selector.
 // Every registered file gets one; built-in variants get one too.
@@ -168,6 +181,23 @@ const COLLECTIONS = [
   },
 ];
 
+// Collections whose single file holds many templates. The payload registry
+// assumes one file equals one payload, so these are split before registration:
+// without it the whole 31KB collection would land as one opaque blob and the
+// operator could not pick or benchmark an individual template.
+const SPLIT_COLLECTIONS = [
+  {
+    prefix: SYAD_COLLECTION_PREFIX,
+    // In-repo copy first, then the data-dir extraction (same order the
+    // jailbreak dir resolution uses).
+    paths: [
+      join(BASE_DIR, "SYADAGENTIC", "templates.md"),
+      join(DATA_PAYLOAD_DIR, "SYADAGENTIC", "templates.md"),
+    ],
+    cat: "pentest",
+  },
+];
+
 const registry = new Map(); // id → payload string
 const categories = new Map(); // id → category key
 
@@ -194,6 +224,27 @@ function loadRegistry() {
         registry.set(id, text);
         categories.set(id, entry.cat || "general");
       }
+    }
+  }
+
+  // Multi-template collections: one file, many payloads. Split before
+  // registering so each template keeps its own id and can be selected or
+  // benchmarked individually instead of shipping as one opaque blob.
+  for (const coll of SPLIT_COLLECTIONS) {
+    let source = null;
+    for (const candidate of coll.paths) {
+      const text = readPayload(candidate);
+      if (text) { source = text; break; }
+    }
+    if (!source) continue;
+
+    for (const tpl of splitSyadagenticTemplates(source)) {
+      // A stub is a heading with a pointer to an external file and no body —
+      // registering it would ship a broken system prompt.
+      if (tpl.stub) continue;
+      const id = `f:${coll.prefix}:${tpl.id}`;
+      registry.set(id, tpl.text);
+      categories.set(id, coll.cat || "pentest");
     }
   }
 }
