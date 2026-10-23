@@ -70,6 +70,12 @@ export {
   getProviderHealth,
 } from "./repos/requestDetailsRepo.js";
 
+// Benchmark outcomes
+export {
+  saveBenchmarkRun, getBenchmarkRuns, getBestPayloadsByModel, pruneBenchmarkRuns,
+  MAX_RETENTION_ROWS,
+} from "./repos/benchmarkRunsRepo.js";
+
 // Export/import full DB
 export async function exportDb() {
   const db = await getAdapter();

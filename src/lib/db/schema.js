@@ -156,6 +156,28 @@ export const TABLES = {
       "CREATE INDEX IF NOT EXISTS idx_rd_conn ON requestDetails(connectionId)",
     ],
   },
+  // Benchmark outcomes. The payload registry ships dozens of prompts and which
+  // one lands depends on the model, but nothing recorded the result — so
+  // MODEL_VARIANT_MAP stayed hand-curated and drifted. The columns that get
+  // queried (model, payload, verdict) are real columns; the per-run detail stays
+  // in the JSON blob because it is only read when someone opens one row.
+  benchmarkRuns: {
+    columns: {
+      id: "TEXT PRIMARY KEY",
+      timestamp: "TEXT NOT NULL",
+      model: "TEXT",
+      payloadId: "TEXT",
+      verdict: "TEXT",
+      score: "INTEGER DEFAULT 0",
+      measuredRuns: "INTEGER DEFAULT 0",
+      data: "TEXT NOT NULL",
+    },
+    indexes: [
+      "CREATE INDEX IF NOT EXISTS idx_br_ts ON benchmarkRuns(timestamp DESC)",
+      "CREATE INDEX IF NOT EXISTS idx_br_model ON benchmarkRuns(model)",
+      "CREATE INDEX IF NOT EXISTS idx_br_payload ON benchmarkRuns(payloadId)",
+    ],
+  },
 };
 
 export function buildCreateTableSql(name, def) {

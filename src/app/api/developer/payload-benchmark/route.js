@@ -1,5 +1,6 @@
 import { runPayload, runPayloadMatrix, resolvePayloadText, DEFAULT_RUNS, MAX_RUNS } from "open-sse/payload/payloadRunner.js";
 import { buildPayloadCatalog } from "open-sse/payload/payloadCatalog.js";
+import { saveBenchmarkRun, pruneBenchmarkRuns } from "@/lib/db";
 
 export const dynamic = "force-dynamic";
 
@@ -143,19 +144,48 @@ export async function POST(request) {
   }
 
   try {
-    if (mode === "single") {
-      const row = await runPayload({ payloadId: payloadIds[0], model, probe, runs, transport: callModel });
-      return Response.json({ mode, model, probe, results: [row] });
+    const rows =
+      mode === "single"
+        ? [await runPayload({ payloadId: payloadIds[0], model, probe, runs, transport: callModel })]
+        : await runPayloadMatrix({
+            payloadIds,
+            model,
+            probe,
+            runs,
+            transport: callModel,
+          });
+
+    // Persist before responding. The result used to live only in the tab that
+    // started it — close the tab and the measurement was gone, which is why
+    // MODEL_VARIANT_MAP stayed hand-curated. saveBenchmarkRun drops rows with
+    // no measured runs on its own: a transport error measures the provider,
+    // not the payload, and recording it as "refused" is how a working payload
+    // gets thrown away.
+    const saved = [];
+    const saveErrors = [];
+    for (const row of rows) {
+      try {
+        const ref = await saveBenchmarkRun(row);
+        if (ref) saved.push(ref.id);
+      } catch (e) {
+        // Storage trouble must not lose the measurement the caller just paid
+        // for in model calls. Report it alongside the results instead.
+        saveErrors.push(String(e?.message || e));
+      }
     }
 
-    const rows = await runPayloadMatrix({
-      payloadIds,
+    if (saved.length) {
+      pruneBenchmarkRuns().catch(() => {});
+    }
+
+    return Response.json({
+      mode,
       model,
       probe,
-      runs,
-      transport: callModel,
+      results: rows,
+      savedRunIds: saved,
+      ...(saveErrors.length ? { saveErrors } : {}),
     });
-    return Response.json({ mode, model, probe, results: rows });
   } catch (e) {
     return Response.json({ error: String(e?.message || e) }, { status: 500 });
   }
