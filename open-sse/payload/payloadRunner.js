@@ -60,7 +60,7 @@ function clampRuns(n) {
  *                                   Must throw on transport failure.
  * @returns {Promise<object>} per-run verdicts plus the aggregate.
  */
-export async function runPayload({ payloadId, model, probe, runs, transport } = {}) {
+export async function runPayload({ payloadId, payloadText: rawText, model, probe, runs, transport } = {}) {
   if (typeof transport !== "function") {
     throw new Error("runPayload requires a transport function");
   }
@@ -71,7 +71,11 @@ export async function runPayload({ payloadId, model, probe, runs, transport } = 
     throw new Error("runPayload requires a probe string");
   }
 
-  const payloadText = resolvePayloadText(payloadId);
+  // A generated variant is not a registered payload id — the evolutionary loop
+  // builds its text on the fly. Callers that already have the text pass it
+  // directly; everything else resolves by id so a typo still fails loudly.
+  const payloadText =
+    typeof rawText === "string" && rawText.trim() ? rawText : resolvePayloadText(payloadId);
   if (payloadText === null) {
     throw new Error(`Unknown payload id: ${payloadId}`);
   }
