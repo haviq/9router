@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { getAdapter } from "@/lib/db";
+import { getAdapter } from "@/lib/db/driver.js";
 import { parseJson } from "@/lib/db/helpers/jsonCol";
 import { summarizeQuota } from "open-sse/utils/quotaWatch.js";
 import { AI_PROVIDERS, getProviderByAlias } from "@/shared/constants/providers";
