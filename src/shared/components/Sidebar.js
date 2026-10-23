@@ -41,6 +41,7 @@ const navItems = [
   { href: "/dashboard/payload-fingerprint", label: "Guard Fingerprint", icon: "fingerprint" },
   { href: "/dashboard/payload-adaptive", label: "Adaptive Escalation", icon: "stairs" },
   { href: "/dashboard/payload-transfer", label: "Payload Transfer", icon: "move_down" },
+  { href: "/dashboard/payload-encoding", label: "Encoding Ladder", icon: "code" },
 ];
 
 const debugItems = [
