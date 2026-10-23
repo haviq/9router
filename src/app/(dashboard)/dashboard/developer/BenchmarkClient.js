@@ -41,6 +41,13 @@ export default function BenchmarkClient({ modelOptions = [] }) {
   const [rows, setRows] = useState([]);
   const [filter, setFilter] = useState("");
 
+  // Persisted outcomes. Results used to live only in this tab — close it and the
+  // measurement was gone, which is why MODEL_VARIANT_MAP stayed hand-curated.
+  // Now every run is stored, so past evidence is one fetch away.
+  const [history, setHistory] = useState(null);
+  const [historyError, setHistoryError] = useState("");
+  const [showHistory, setShowHistory] = useState(false);
+
   // Catalog load. Once it lands, default the model to the first option so the
   // Run button is usable without a second interaction.
   useEffect(() => {
@@ -115,6 +122,35 @@ export default function BenchmarkClient({ modelOptions = [] }) {
       setBusy(false);
     }
   }, [effectiveModel, probe, selected, runs]);
+
+  // Load stored results on demand. Lazy rather than on mount: the table is only
+  // wanted when someone asks "what has actually worked here", and firing it on
+  // every tab open is a query nobody asked for.
+  const loadHistory = useCallback(async () => {
+    setHistoryError("");
+    try {
+      const params = new URLSearchParams();
+      if (effectiveModel) params.set("model", effectiveModel);
+      params.set("limit", "100");
+      const res = await fetch(`/api/developer/payload-benchmark/history?${params}`, {
+        cache: "no-store",
+      });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(body?.error || `HTTP ${res.status}`);
+      setHistory(body);
+    } catch (e) {
+      setHistoryError(e?.message || "Failed to load history");
+      setHistory(null);
+    }
+  }, [effectiveModel]);
+
+  const toggleHistory = useCallback(() => {
+    setShowHistory((prev) => {
+      const next = !prev;
+      if (next) loadHistory();
+      return next;
+    });
+  }, [loadHistory]);
 
   const canRun = !busy && !!effectiveModel && probe.trim().length > 0 && selected.size > 0;
 
@@ -218,6 +254,100 @@ export default function BenchmarkClient({ modelOptions = [] }) {
             );
           })}
         </div>
+      </Card>
+
+      <Card padding="sm">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div>
+            <p className="text-xs font-semibold">Stored results</p>
+            <p className="text-[10px] text-text-muted">
+              Past benchmark runs, saved server-side. Survives closing the tab.
+            </p>
+          </div>
+          <Button variant="secondary" size="sm" onClick={toggleHistory}>
+            {showHistory ? "Hide history" : "Load history"}
+          </Button>
+        </div>
+
+        {showHistory && historyError && (
+          <p className="mt-2 text-xs text-error">{historyError}</p>
+        )}
+
+        {showHistory && history && (
+          <div className="mt-2 flex flex-col gap-3">
+            <div>
+              <p className="mb-1 text-[10px] font-semibold uppercase text-text-muted">
+                Best payload per model ({history.best?.length || 0}, needs 2+ measured runs)
+              </p>
+              {(history.best || []).length === 0 ? (
+                <p className="text-[11px] text-text-muted">
+                  Not enough measured runs yet — run a payload at least twice.
+                </p>
+              ) : (
+                <div className="overflow-x-auto">
+                  <table className="w-full min-w-[520px] text-left text-[11px]">
+                    <thead className="border-b border-border-subtle text-text-muted">
+                      <tr>
+                        <th className="px-2 py-1 font-semibold">Model</th>
+                        <th className="px-2 py-1 font-semibold">Payload</th>
+                        <th className="px-2 py-1 text-right font-semibold">Mean</th>
+                        <th className="px-2 py-1 text-right font-semibold">Best</th>
+                        <th className="px-2 py-1 text-right font-semibold">Measured</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {history.best.map((b) => (
+                        <tr
+                          key={`${b.model}::${b.payloadId}`}
+                          className="border-b border-border-subtle/50 last:border-0"
+                        >
+                          <td className="px-2 py-1 font-mono">{b.model}</td>
+                          <td className="px-2 py-1 font-mono">{b.payloadId}</td>
+                          <td className="px-2 py-1 text-right tabular-nums">
+                            {Math.round(b.meanScore)}
+                          </td>
+                          <td className="px-2 py-1 text-right tabular-nums">{Math.round(b.bestScore)}</td>
+                          <td className="px-2 py-1 text-right tabular-nums">{b.totalMeasured}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+
+            <div>
+              <p className="mb-1 text-[10px] font-semibold uppercase text-text-muted">
+                Recent runs ({history.count || 0})
+              </p>
+              {(history.runs || []).length === 0 ? (
+                <p className="text-[11px] text-text-muted">No stored runs yet.</p>
+              ) : (
+                <div className="flex flex-col gap-1">
+                  {history.runs.map((r) => (
+                    <div
+                      key={r.id}
+                      className="flex flex-wrap items-center gap-2 rounded border border-border-subtle px-2 py-1 text-[11px]"
+                    >
+                      <Badge variant={VERDICT_VARIANT[r.verdict] || "default"} size="sm">
+                        {r.verdict}
+                      </Badge>
+                      <span className="tabular-nums">{r.score}</span>
+                      <span className="font-mono text-text-muted">{r.payloadId}</span>
+                      <span className="font-mono text-text-muted">{r.model}</span>
+                      <span className="tabular-nums text-text-muted">
+                        {r.measuredRuns} measured
+                      </span>
+                      <span className="ml-auto text-text-muted">
+                        {new Date(r.timestamp).toLocaleString()}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+        )}
       </Card>
 
       {rows.length > 0 && (
