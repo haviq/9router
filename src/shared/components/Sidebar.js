@@ -35,6 +35,7 @@ const navItems = [
   { href: "/dashboard/developer", label: "Developer", icon: "developer_mode" },
   { href: "/dashboard/penetration", label: "Penetration", icon: "scanner" },
   { href: "/dashboard/payload", label: "Jailbreaks", icon: "gavel" },
+  { href: "/dashboard/payload-matrix", label: "Model Matrix", icon: "table_chart" },
 ];
 
 const debugItems = [

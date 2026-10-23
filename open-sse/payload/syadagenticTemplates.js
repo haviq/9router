@@ -83,3 +83,50 @@ export function extractModelMatrix(markdown) {
   const next = src.indexOf("\n## ", start + 3);
   return src.slice(start, next === -1 ? src.length : next).trim();
 }
+
+// Parse the matrix table into rows.
+//
+// The table is the most useful thing in the collection — it says which template
+// has been observed to work on which model family — and it was being dropped
+// entirely because a markdown table is not an injectable payload. Parsing it
+// separately lets the dashboard show the guidance without ever sending it.
+//
+// Verified status is normalised into three states rather than kept as raw text:
+// the raw column mixes "✅ OPEN", "⚠️ butuh plan" and prose, and a caller that
+// has to regex an emoji is a caller that will get it wrong.
+export function parseModelMatrix(markdown) {
+  const block = extractModelMatrix(markdown);
+  if (!block) return [];
+
+  const rows = [];
+  for (const line of block.split("\n")) {
+    const trimmed = line.trim();
+    if (!trimmed.startsWith("|")) continue;
+    // Skip the header row and the |---|---| separator.
+    if (/^\|\s*-{2,}/.test(trimmed)) continue;
+
+    const cells = trimmed
+      .split("|")
+      .slice(1, -1)
+      .map((c) => c.trim());
+
+    if (cells.length < 2) continue;
+    const [model, bestTemplate, verifiedRaw = ""] = cells;
+    if (/^model$/i.test(model)) continue;
+    if (!model) continue;
+
+    const verified = verifiedRaw || "";
+    let status = "unknown";
+    if (/✅|\bOPEN\b/i.test(verified)) status = "open";
+    else if (/⚠️|\bbutuh\b|\bneeds?\b/i.test(verified)) status = "conditional";
+
+    rows.push({
+      model,
+      bestTemplate,
+      verified,
+      status,
+    });
+  }
+
+  return rows;
+}
