@@ -37,6 +37,7 @@ const navItems = [
   { href: "/dashboard/payload", label: "Jailbreaks", icon: "gavel" },
   { href: "/dashboard/payload-matrix", label: "Model Matrix", icon: "table_chart" },
   { href: "/dashboard/payload-compare", label: "Payload Compare", icon: "compare" },
+  { href: "/dashboard/payload-evolve", label: "Payload Evolve", icon: "genetics" },
 ];
 
 const debugItems = [
