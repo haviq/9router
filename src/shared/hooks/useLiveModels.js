@@ -22,11 +22,20 @@ export default function useLiveModels() {
     let cancelled = false;
 
     (async () => {
+      // /v1/models returns {id, ...}. /api/models returns {provider, model,
+      // fullModel, routedModel} with NO `id` field — filtering on `m.id` dropped
+      // every row and the dropdown stayed empty even though the endpoint was
+      // fine. Derive the id from whatever the payload actually carries.
       const normalise = (raw) =>
         raw
-          .map((m) => (typeof m === "string" ? { id: m } : m))
-          .filter((m) => m && m.id)
-          .map((m) => ({ ...m, requestModel: m.requestModel || m.routedModel || m.id }));
+          .map((m) => {
+            if (typeof m === "string") return { id: m, requestModel: m };
+            if (!m) return null;
+            const id = m.id || m.routedModel || m.fullModel || (m.provider && m.model ? `${m.provider}/${m.model}` : "");
+            if (!id) return null;
+            return { ...m, id, requestModel: m.requestModel || m.routedModel || m.fullModel || id };
+          })
+          .filter(Boolean);
 
       try {
         const live = await fetch("/v1/models", { cache: "no-store" });
