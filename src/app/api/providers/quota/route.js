@@ -21,6 +21,29 @@ function parseWindow(raw) {
   );
 }
 
+// Choose the body that actually carries the failure.
+//
+// providerResponse is empty on real failures — a live error row had
+// `providerResponse: {}` while the message sat in `response`. `??` cannot catch
+// that (an empty object is not nullish), so prefer whichever has content and
+// fall back to the raw string when the payload is a JSON string.
+function pickBody(detail) {
+  const candidates = [detail?.providerResponse, detail?.response];
+
+  for (const candidate of candidates) {
+    if (candidate == null) continue;
+    if (typeof candidate === "string") {
+      if (candidate.trim()) return candidate;
+      continue;
+    }
+    if (typeof candidate === "object") {
+      if (Object.keys(candidate).length > 0) return candidate;
+    }
+  }
+
+  return null;
+}
+
 function displayName(providerId, nodeNames) {
   if (nodeNames[providerId]) return nodeNames[providerId];
   const config = getProviderByAlias(providerId) || AI_PROVIDERS[providerId];
@@ -65,10 +88,16 @@ export async function GET(request) {
       const isSuccess = row.status === "success" || row.status === "completed" || row.status === "200 OK";
       if (isSuccess) continue;
 
+      // providerResponse is not reliably populated on failures. A real error row
+      // on this instance carried `providerResponse: {}` while the actual body
+      // ({"error":"...","status":401}) sat in `response`. `??` does not help —
+      // an empty object is not nullish — so pick whichever one carries content.
+      const body = pickBody(detail);
+
       entries.push({
         provider: row.provider,
-        body: detail.providerResponse ?? detail.response ?? null,
-        statusCode: detail.statusCode ?? detail.status ?? null,
+        body,
+        statusCode: detail.statusCode ?? body?.status ?? null,
       });
     }
 
