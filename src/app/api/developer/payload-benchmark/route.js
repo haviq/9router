@@ -1,5 +1,6 @@
 import { runPayload, runPayloadMatrix, resolvePayloadText, DEFAULT_RUNS, MAX_RUNS } from "open-sse/payload/payloadRunner.js";
 import { buildPayloadCatalog } from "open-sse/payload/payloadCatalog.js";
+import { runPayloadSweep, clampConcurrency } from "open-sse/payload/payloadSweep.js";
 import { saveBenchmarkRun, pruneBenchmarkRuns } from "@/lib/db";
 
 export const dynamic = "force-dynamic";
@@ -129,6 +130,17 @@ export async function POST(request) {
   const runs = body?.runs;
   const mode = body?.mode === "single" ? "single" : "matrix";
 
+  // Parallelism is opt-in. The sequential default exists because provider rate
+  // limits are per-key: a wide sweep that fires everything at once measures the
+  // limiter, not the payload. A caller that knows its provider can take the
+  // concurrency opts in explicitly and gets a bounded sweep instead.
+  const concurrency = clampConcurrency(body?.concurrency, 1);
+  // Resume support: ids the caller already measured are skipped, so a sweep
+  // that lost its connection does not pay for those model calls twice.
+  const skip = Array.isArray(body?.skip)
+    ? body.skip.filter((id) => typeof id === "string" && id.trim()).map((id) => id.trim())
+    : [];
+
   if (!model) return Response.json({ error: "model is required" }, { status: 400 });
   if (!probe) return Response.json({ error: "probe is required" }, { status: 400 });
   if (!payloadIds.length) {
@@ -144,16 +156,28 @@ export async function POST(request) {
   }
 
   try {
-    const rows =
-      mode === "single"
-        ? [await runPayload({ payloadId: payloadIds[0], model, probe, runs, transport: callModel })]
-        : await runPayloadMatrix({
-            payloadIds,
-            model,
-            probe,
-            runs,
-            transport: callModel,
-          });
+    let rows;
+    let skipped = [];
+
+    if (mode === "single") {
+      rows = [await runPayload({ payloadId: payloadIds[0], model, probe, runs, transport: callModel })];
+    } else if (concurrency <= 1) {
+      // Sequential path unchanged. A caller that did not ask for parallelism
+      // must not silently get it — the rate-limit reasoning still applies.
+      rows = await runPayloadMatrix({ payloadIds, model, probe, runs, transport: callModel });
+    } else {
+      const sweep = await runPayloadSweep({
+        payloadIds,
+        model,
+        probe,
+        runs,
+        transport: callModel,
+        concurrency,
+        skip,
+      });
+      rows = sweep.rows;
+      skipped = sweep.skipped;
+    }
 
     // Persist before responding. The result used to live only in the tab that
     // started it — close the tab and the measurement was gone, which is why
