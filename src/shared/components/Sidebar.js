@@ -39,6 +39,7 @@ const navItems = [
   { href: "/dashboard/payload-compare", label: "Payload Compare", icon: "compare" },
   { href: "/dashboard/payload-evolve", label: "Payload Evolve", icon: "genetics" },
   { href: "/dashboard/payload-fingerprint", label: "Guard Fingerprint", icon: "fingerprint" },
+  { href: "/dashboard/payload-adaptive", label: "Adaptive Escalation", icon: "stairs" },
 ];
 
 const debugItems = [
