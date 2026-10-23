@@ -1,4 +1,5 @@
 import { runAdaptiveLadder, LADDER, ANGLES, MAX_TURNS } from "open-sse/payload/adaptiveTurn.js";
+import { summarizeTurns } from "open-sse/payload/turnScore.js";
 import { saveBenchmarkRun, pruneBenchmarkRuns } from "@/lib/db";
 
 export const dynamic = "force-dynamic";
@@ -108,6 +109,12 @@ export async function POST(request) {
       // Storage trouble must not lose a measurement the caller already paid for.
     }
 
+    // The per-turn curve is the reason this endpoint exists. A final verdict of
+    // "refused" hides the four turns of engagement that came before it, and the
+    // drop point is where the strategy should have changed — so it is computed
+    // here rather than left for the client to re-derive.
+    const summary = summarizeTurns(result.turns);
+
     return Response.json({
       model,
       probe,
@@ -116,6 +123,7 @@ export async function POST(request) {
       stopped: result.stopped,
       best: result.best,
       turns: result.turns,
+      summary,
       savedRunId,
     });
   } catch (e) {
