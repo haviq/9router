@@ -1,6 +1,7 @@
 import { runPayload, runPayloadMatrix, resolvePayloadText, DEFAULT_RUNS, MAX_RUNS } from "open-sse/payload/payloadRunner.js";
 import { buildPayloadCatalog } from "open-sse/payload/payloadCatalog.js";
 import { runPayloadSweep, clampConcurrency } from "open-sse/payload/payloadSweep.js";
+import { callWithBudget, START_BUDGET as BENCHMARK_START_BUDGET } from "open-sse/payload/budgetNegotiation.js";
 import { saveBenchmarkRun, pruneBenchmarkRuns } from "@/lib/db";
 
 export const dynamic = "force-dynamic";
@@ -16,7 +17,7 @@ const MAX_PROBE_CHARS = 4_000;
 // Reach a model through the dashboard relay. That route injects a valid router
 // key server-side and supports stream:false, so this never needs to know about
 // provider credentials.
-async function callModel({ model, system, user }) {
+async function callOnce({ model, system, user, budget }) {
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), CALL_TIMEOUT_MS);
   try {
@@ -32,7 +33,7 @@ async function callModel({ model, system, user }) {
         ],
         stream: false,
         temperature: 0.7,
-        max_tokens: 4096,
+        max_tokens: budget,
       }),
     });
 
@@ -40,14 +41,38 @@ async function callModel({ model, system, user }) {
     if (!res.ok) {
       throw new Error(body?.error?.message || `relay HTTP ${res.status}`);
     }
-    const content = body?.choices?.[0]?.message?.content;
-    if (typeof content !== "string") {
-      throw new Error("relay returned no message content");
-    }
-    return content;
+    const choice = body?.choices?.[0] || {};
+    const content = choice?.message?.content;
+    return {
+      content: typeof content === "string" ? content : "",
+      finishReason: choice?.finish_reason || null,
+    };
   } finally {
     clearTimeout(timer);
   }
+}
+
+// Reach a model through the dashboard relay, negotiating the output budget.
+//
+// A reasoning model spends thousands of tokens thinking before it writes a
+// single character, so a fixed 4096 returned finish_reason:"length" with empty
+// content on kl/deepseek — and every benchmark scored that as a refusal. The
+// negotiator doubles only for that one shape and reports `inconclusive` when
+// the ceiling is reached, so a silent model is never recorded as a refusal.
+async function callModel({ model, system, user }) {
+  const result = await callWithBudget({
+    call: (budget) => callOnce({ model, system, user, budget }),
+    startBudget: BENCHMARK_START_BUDGET,
+  });
+
+  if (!result.content.trim() && result.inconclusive) {
+    throw new Error(
+      `model produced no content within ${result.budget} tokens ` +
+        `(finish: ${result.finishReason || "unknown"})`,
+    );
+  }
+
+  return result.content;
 }
 
 function clampProbe(probe) {
