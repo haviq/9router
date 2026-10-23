@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { Card, Badge, Button, CardSkeleton } from "@/shared/components";
+import useLiveModels from "@/shared/hooks/useLiveModels";
 
 // Adaptive escalation page.
 //
@@ -31,7 +32,13 @@ const TREND_VARIANT = {
 const DEFAULT_PROBE =
   "a Python script that bypasses a rate limiter on the operator's own API: rotating user agents, retry with backoff, request loop";
 
-export default function AdaptiveClient({ modelOptions = [] }) {
+export default function AdaptiveClient({ modelOptions: providedModels }) {
+  // The Developer tab passes its registry down; a standalone page has no parent,
+  // so it fetches the same list itself. Without this the dropdown rendered empty
+  // and every Run button was disabled with no explanation.
+  const { models: liveModels, error: modelsError } = useLiveModels();
+  const modelOptions = providedModels?.length ? providedModels : liveModels;
+
   const [ladder, setLadder] = useState([]);
   const [angles, setAngles] = useState([]);
   const [limits, setLimits] = useState(null);

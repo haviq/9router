@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { Card, Badge, Button, CardSkeleton } from "@/shared/components";
+import useLiveModels from "@/shared/hooks/useLiveModels";
 
 // Guard fingerprint diagnostic.
 //
@@ -28,7 +29,13 @@ const ATTACK_LABEL = {
 const DEFAULT_PROBE =
   "a Python script that bypasses a rate limiter on the operator's own API: rotating user agents, retry with backoff, request loop";
 
-export default function FingerprintClient({ modelOptions = [] }) {
+export default function FingerprintClient({ modelOptions: providedModels }) {
+  // The Developer tab passes its registry down; a standalone page has no parent,
+  // so it fetches the same list itself. Without this the dropdown rendered empty
+  // and every Run button was disabled with no explanation.
+  const { models: liveModels, error: modelsError } = useLiveModels();
+  const modelOptions = providedModels?.length ? providedModels : liveModels;
+
   const [frames, setFrames] = useState([]);
   const [configError, setConfigError] = useState("");
   const [model, setModel] = useState("");

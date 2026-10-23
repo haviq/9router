@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Card, Badge, Button, CardSkeleton } from "@/shared/components";
+import useLiveModels from "@/shared/hooks/useLiveModels";
 
 // Cross-model transfer planner.
 //
@@ -16,7 +17,13 @@ import { Card, Badge, Button, CardSkeleton } from "@/shared/components";
 // the whole point — a transfer recorded without measurement is a guess wearing
 // a result's clothes.
 
-export default function TransferClient({ modelOptions = [] }) {
+export default function TransferClient({ modelOptions: providedModels }) {
+  // The Developer tab passes its registry down; a standalone page has no parent,
+  // so it fetches the same list itself. Without this the dropdown rendered empty
+  // and every Run button was disabled with no explanation.
+  const { models: liveModels, error: modelsError } = useLiveModels();
+  const modelOptions = providedModels?.length ? providedModels : liveModels;
+
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
