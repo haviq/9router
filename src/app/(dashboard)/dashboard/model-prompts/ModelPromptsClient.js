@@ -18,6 +18,48 @@ const EMPTY_RULE = () => ({
   enabled: true,
 });
 
+// Count how many live models a pattern would capture, before it is saved.
+//
+// Why this exists: a rule whose pattern is "deepseek" does not match one model,
+// it matches every model with deepseek in the id — including whatever an agent
+// or container is currently running on. That is easy to write and hard to
+// notice until behaviour changes, so the count is shown while typing rather
+// than discovered afterwards.
+//
+// Mirrors compilePattern in open-sse/payload/modelPrompts.js: /regex/flags form
+// when wrapped in slashes, case-insensitive substring otherwise. A pattern that
+// fails to compile returns null so a typo shows "invalid" instead of silently
+// matching nothing.
+function compileClientPattern(pattern) {
+  const raw = String(pattern || "").trim();
+  if (!raw) return null;
+
+  if (raw.length > 2 && raw.startsWith("/") && raw.lastIndexOf("/") > 0) {
+    const end = raw.lastIndexOf("/");
+    const body = raw.slice(1, end);
+    const flags = raw.slice(end + 1).replace(/[^i]/g, "");
+    if (body) {
+      try {
+        const re = new RegExp(body, flags);
+        return (id) => re.test(id);
+      } catch {
+        // Fall through to substring. The server does the same: a regex that
+        // will not compile degrades to a literal match rather than killing the
+        // rule, so the badge must agree with that instead of showing "invalid".
+      }
+    }
+  }
+
+  const needle = raw.toLowerCase();
+  return (id) => String(id).toLowerCase().includes(needle);
+}
+
+function countMatches(pattern, models) {
+  const match = compileClientPattern(pattern);
+  if (!match) return null;
+  return models.reduce((n, id) => (match(id) ? n + 1 : n), 0);
+}
+
 export default function ModelPromptsClient() {
   const [enabled, setEnabled] = useState(false);
   const [rules, setRules] = useState([]);
@@ -237,6 +279,37 @@ export default function ModelPromptsClient() {
                       no prompt
                     </Badge>
                   )}
+                  {(() => {
+                    if (!rule.pattern?.trim()) return null;
+                    if (!liveModels.length) return null;
+                    const n = countMatches(rule.pattern, liveModels);
+                    if (n === null) {
+                      return (
+                        <Badge variant="error" size="sm" title="Pattern does not compile — fix the regex or the rule never fires">
+                          invalid
+                        </Badge>
+                      );
+                    }
+                    if (n === 0) {
+                      return (
+                        <Badge variant="warning" size="sm" title="No live model matches this pattern right now">
+                          matches 0
+                        </Badge>
+                      );
+                    }
+                    // A broad pattern is not an error, but it is the kind of
+                    // thing that silently captures an agent's own model, so it
+                    // gets a warning tone once it swallows more than a handful.
+                    return (
+                      <Badge
+                        variant={n > 5 ? "warning" : "default"}
+                        size="sm"
+                        title={`Matches ${n} of ${liveModels.length} live models`}
+                      >
+                        matches {n}
+                      </Badge>
+                    );
+                  })()}
                   <button
                     onClick={() => removeRule(index)}
                     className="rounded px-2 py-1 text-xs font-semibold text-error transition-colors hover:bg-error/10"
