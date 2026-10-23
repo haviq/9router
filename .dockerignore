@@ -7,7 +7,11 @@
 **/.vscode
 
 # Dependencies and build output
-node_modules
+# Exclude the *contents*, not the directory: Docker cannot re-include a path
+# whose parent directory was excluded, so a bare `node_modules` makes every
+# `!node_modules/<pkg>` exception below a no-op — the build context simply has
+# no node_modules at all and COPY fails with "not found".
+node_modules/*
 .next/*
 out
 build
