@@ -79,7 +79,7 @@ export default function MatrixClient() {
             Which payload the SYADAGENTIC collection recommends per model family.
           </p>
         </div>
-        <Button variant="secondary" size="sm" onClick={load} disabled={loading}>
+        <Button variant="secondary" size="sm" onClick={refresh} disabled={loading}>
           Refresh
         </Button>
       </div>
