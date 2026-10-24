@@ -1,112 +1,73 @@
 import { NextResponse } from "next/server";
-import { getModelAliases, getCustomModels, getProviderConnections, getProviderNodes } from "@/models";
-import { getDisabledModels } from "@/lib/disabledModelsDb";
-import { AI_MODELS } from "@/shared/constants/config";
-import { getProviderAlias, ALIAS_TO_ID } from "@/shared/constants/providers";
-import { getCapabilitiesForModel } from "open-sse/providers/capabilities.js";
+import { getApiKeys } from "@/lib/db/repos/apiKeysRepo.js";
+import { getProviderNodes } from "@/models";
 
-// GET /api/models - Get models for dashboard with aliases and clean active providers
+export const dynamic = "force-dynamic";
+
+// GET /api/models - Menyajikan daftar model aktif nyata yang bisa di-route (sinkron dengan /v1/models)
 export async function GET() {
   try {
-    const modelAliases = await getModelAliases().catch(() => ({}));
-    const disabled = await getDisabledModels().catch(() => ({}));
-    const [connections, nodes] = await Promise.all([
-      getProviderConnections().catch(() => []),
+    const [keys, nodes] = await Promise.all([
+      getApiKeys().catch(() => []),
       getProviderNodes().catch(() => []),
     ]);
 
-    // Kumpulkan provider aktif dari connections
-    const activeProviders = new Set();
-    connections.forEach((c) => {
-      if (c && c.isActive !== false) {
-        if (c.provider) activeProviders.add(c.provider.toLowerCase());
-        const alias = getProviderAlias(c.provider);
-        if (alias) activeProviders.add(alias.toLowerCase());
-      }
+    const activeKey = keys.find((k) => k.isActive)?.key || keys[0]?.key || "";
+    const port = process.env.PORT || 20128;
+    const headers = { "Content-Type": "application/json" };
+    if (activeKey) headers["Authorization"] = `Bearer ${activeKey}`;
+
+    // Panggil internal /v1/models untuk mendapatkan 600+ model yang beneran aktif & bisa di-route
+    const v1Res = await fetch(`http://127.0.0.1:${port}/v1/models`, {
+      headers,
+      cache: "no-store",
+      signal: AbortSignal.timeout(6000),
     });
 
-    // Mapping UUID node -> clean prefix (kl, ifx, mg, cn, ar, at, etc.)
+    if (!v1Res.ok) {
+      throw new Error(`Internal /v1/models returned HTTP ${v1Res.status}`);
+    }
+
+    const v1Data = await v1Res.json();
+    const rawModels = Array.isArray(v1Data?.data) ? v1Data.data : [];
+
+    // Mapping UUID provider node ke prefix bersih jika ada
     const nodePrefixMap = {};
     nodes.forEach((n) => {
       if (!n) return;
-      const isDisabled = n.disabled || n.isDisabled || n.isActive === false;
-      if (!isDisabled) {
-        const cleanPrefix = (n.prefix || n.name || "custom").toLowerCase().replace(/\/.*$/, "");
-        if (n.id) nodePrefixMap[n.id.toLowerCase()] = cleanPrefix;
-        activeProviders.add(cleanPrefix);
-        if (n.id) activeProviders.add(n.id.toLowerCase());
-      }
+      const prefix = (n.prefix || n.name || "").toLowerCase().replace(/\/.*$/, "");
+      if (n.id && prefix) nodePrefixMap[n.id.toLowerCase()] = prefix;
     });
 
-    // Filter AI_MODELS: HANYA yang provider-nya benar-benar aktif punya koneksi di instance user!
-    // Model dummy bawaan (SAMBA, LOCAL-DEVICE, SELFHOSTED-*, MMF, dll) yang tidak terhubung otomatis DIBUANG!
-    const models = AI_MODELS
-      .filter((m) => {
-        const alias = (getProviderAlias(m.provider) || m.provider || "").toLowerCase();
-        const rawProv = (m.provider || "").toLowerCase();
-        if (!activeProviders.has(alias) && !activeProviders.has(rawProv)) {
-          return false;
+    // Format model agar kompatibel dengan seluruh komponen dashboard 9router
+    const formattedModels = rawModels.map((m) => {
+      let id = m.id || "";
+      let provider = "direct";
+
+      if (id.includes("/")) {
+        const parts = id.split("/");
+        const rawProv = parts[0];
+        const mapped = nodePrefixMap[rawProv.toLowerCase()];
+        if (mapped) {
+          provider = mapped;
+          id = `${mapped}/${parts.slice(1).join("/")}`;
+        } else {
+          provider = rawProv;
         }
-        const list = disabled[alias] || disabled[m.provider] || [];
-        return !list.includes(m.model);
-      })
-      .map((m) => {
-        const fullModel = `${m.provider}/${m.model}`;
-        const providerAlias = getProviderAlias(m.provider) || m.provider;
-        const routedModel = `${providerAlias}/${m.model}`;
-        const c = getCapabilitiesForModel(m.provider, m.model);
-        return {
-          ...m,
-          fullModel,
-          routedModel,
-          alias: modelAliases[fullModel] || m.model,
-          caps: {
-            vision: c.vision,
-            search: c.search,
-            reasoning: c.reasoning,
-            contextWindow: c.contextWindow,
-            maxOutput: c.maxOutput,
-          },
-        };
-      });
+      }
 
-    // Masukkan custom models dari providerNodes & customModels
-    const seenFull = new Set(models.map((m) => m.fullModel));
-    const seenRouted = new Set(models.map((m) => m.routedModel));
-    const rawCustomModels = (await getCustomModels().catch(() => [])).filter((m) => {
-      return m?.id && (m.kind || m.type || "llm") === "llm";
-    });
-
-    for (const m of rawCustomModels) {
-      const rawAlias = (m.providerAlias || "").toLowerCase();
-      // Petakan jika providerAlias berupa UUID openai-compatible-chat-...
-      const cleanAlias = nodePrefixMap[rawAlias] || m.providerAlias;
-
-      const fullModel = `${cleanAlias}/${m.id}`;
-      if (seenRouted.has(fullModel) || seenFull.has(fullModel)) continue;
-      seenFull.add(fullModel);
-      seenRouted.add(fullModel);
-
-      const providerId = ALIAS_TO_ID[cleanAlias] || cleanAlias;
-      const c = getCapabilitiesForModel(providerId, m.id);
-      models.push({
-        provider: cleanAlias,
+      return {
+        id,
         model: m.id,
         name: m.name || m.id,
-        fullModel,
-        routedModel: fullModel,
-        alias: modelAliases[fullModel] || m.id,
-        caps: {
-          vision: c.vision,
-          search: c.search,
-          reasoning: c.reasoning,
-          contextWindow: c.contextWindow,
-          maxOutput: c.maxOutput,
-        },
-      });
-    }
+        provider,
+        fullModel: id,
+        routedModel: id,
+        kind: m.kind || "llm",
+      };
+    });
 
-    return NextResponse.json(models);
+    return NextResponse.json(formattedModels);
   } catch (err) {
     return NextResponse.json({ error: err.message }, { status: 500 });
   }
