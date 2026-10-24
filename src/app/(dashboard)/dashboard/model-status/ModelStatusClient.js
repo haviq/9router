@@ -4,24 +4,17 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Card, Badge, Button, CardSkeleton } from "@/shared/components";
 import useLiveModels from "@/shared/hooks/useLiveModels";
 
-const STATUS_COLOR = {
-  ok: "success",
-  error: "error",
-  checking: "warning",
-  untested: "default",
-};
-
 export default function ModelStatusClient() {
   const { models: liveModels, loading: modelsLoading, error: modelsError } = useLiveModels();
   const [probeResults, setProbeResults] = useState({});
   const [running, setRunning] = useState(false);
-  const [filterStatus, setFilterStatus] = useState("all"); // all, ok, error, untested
-  const [selectedProvider, setSelectedProvider] = useState("all");
+  const [selectedModel, setSelectedModel] = useState(null);
   const [search, setSearch] = useState("");
   const [concurrency, setConcurrency] = useState(4);
+  const [expandedProvider, setExpandedProvider] = useState(null);
   const cancelRef = useRef(false);
 
-  // Fetch initial cached status from backend
+  // Load cached status on mount
   useEffect(() => {
     (async () => {
       try {
@@ -39,16 +32,6 @@ export default function ModelStatusClient() {
       } catch {}
     })();
   }, []);
-
-  // Group providers
-  const providers = useMemo(() => {
-    const set = new Set();
-    liveModels.forEach((m) => {
-      const p = m.id.includes("/") ? m.id.split("/")[0] : "default";
-      set.add(p);
-    });
-    return Array.from(set).sort();
-  }, [liveModels]);
 
   // Single model probe
   const pingOne = useCallback(async (modelItem) => {
@@ -69,68 +52,79 @@ export default function ModelStatusClient() {
         ...prev,
         [id]: { ...data, checking: false },
       }));
+      // Update selected detail if currently inspected
+      setSelectedModel((cur) => (cur?.id === id ? { ...data, checking: false } : cur));
     } catch (err) {
+      const failed = {
+        id,
+        ok: false,
+        status: 500,
+        latencyMs: 0,
+        error: err.message,
+        checking: false,
+        testedAt: new Date().toISOString(),
+      };
       setProbeResults((prev) => ({
         ...prev,
-        [id]: {
-          id,
-          ok: false,
-          status: 500,
-          latencyMs: 0,
-          error: err.message,
-          checking: false,
-          testedAt: new Date().toISOString(),
-        },
+        [id]: failed,
       }));
+      setSelectedModel((cur) => (cur?.id === id ? failed : cur));
     }
   }, []);
 
   // Batch probe execution
-  const startBatch = useCallback(async (targets) => {
-    if (running || !targets.length) return;
-    setRunning(true);
-    cancelRef.current = false;
+  const startBatch = useCallback(
+    async (targets) => {
+      if (running || !targets.length) return;
+      setRunning(true);
+      cancelRef.current = false;
 
-    const queue = [...targets];
-    const limit = Math.max(1, Math.min(8, Number(concurrency) || 4));
+      const queue = [...targets];
+      const limit = Math.max(1, Math.min(8, Number(concurrency) || 4));
 
-    async function worker() {
-      while (queue.length > 0 && !cancelRef.current) {
-        const item = queue.shift();
-        if (!item) break;
-        await pingOne(item);
+      async function worker() {
+        while (queue.length > 0 && !cancelRef.current) {
+          const item = queue.shift();
+          if (!item) break;
+          await pingOne(item);
+        }
       }
-    }
 
-    await Promise.all(Array.from({ length: limit }, worker));
-    setRunning(false);
-  }, [running, concurrency, pingOne]);
+      await Promise.all(Array.from({ length: limit }, worker));
+      setRunning(false);
+    },
+    [running, concurrency, pingOne]
+  );
 
   const stopBatch = useCallback(() => {
     cancelRef.current = true;
     setRunning(false);
   }, []);
 
-  // Filtered list
-  const filteredModels = useMemo(() => {
-    return liveModels.filter((m) => {
-      const id = m.id.toLowerCase();
-      const p = m.id.includes("/") ? m.id.split("/")[0] : "default";
+  // Group models by provider with stats
+  const grouped = useMemo(() => {
+    const groups = {};
+    const query = search.trim().toLowerCase();
 
-      if (selectedProvider !== "all" && p !== selectedProvider) return false;
-      if (search && !id.includes(search.toLowerCase())) return false;
+    liveModels.forEach((m) => {
+      if (query && !m.id.toLowerCase().includes(query)) return;
+      const prov = m.id.includes("/") ? m.id.split("/")[0] : "direct";
+      if (!groups[prov]) {
+        groups[prov] = { provider: prov, models: [], ok: 0, error: 0, untested: 0 };
+      }
+      groups[prov].models.push(m);
 
-      const res = probeResults[m.id];
-      if (filterStatus === "ok" && !res?.ok) return false;
-      if (filterStatus === "error" && (!res || res.ok)) return false;
-      if (filterStatus === "untested" && res) return false;
-
-      return true;
+      const r = probeResults[m.id];
+      if (!r) groups[prov].untested++;
+      else if (r.ok) groups[prov].ok++;
+      else groups[prov].error++;
     });
-  }, [liveModels, selectedProvider, search, filterStatus, probeResults]);
 
-  // Stats
-  const stats = useMemo(() => {
+    return Object.values(groups).sort((a, b) => b.models.length - a.models.length);
+  }, [liveModels, probeResults, search]);
+
+  // Global aggregate stats
+  const globalStats = useMemo(() => {
     let ok = 0;
     let error = 0;
     let untested = 0;
@@ -141,255 +135,383 @@ export default function ModelStatusClient() {
       else error++;
     });
     const tested = ok + error;
-    const percent = tested > 0 ? Math.round((ok / tested) * 100) : 0;
-    return { total: liveModels.length, ok, error, untested, percent };
+    const ratio = tested > 0 ? Math.round((ok / tested) * 100) : 0;
+    return { total: liveModels.length, ok, error, untested, ratio, tested };
   }, [liveModels, probeResults]);
 
   return (
     <div className="flex flex-col gap-4">
-      {/* Header */}
+      {/* Top Header */}
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
           <h1 className="text-lg font-bold flex items-center gap-2">
-            <span className="material-symbols-outlined text-primary text-xl">speed</span>
-            Realtime Model Upstream Status
+            <span className="material-symbols-outlined text-primary text-xl">dashboard</span>
+            Upstream Status Matrix
           </h1>
           <p className="text-xs text-text-muted">
-            Live probe ke upstream provider untuk mendeteksi model mati, kuota habis, atau error seketika.
+            Pemeriksaan upstream model bergaya status bar &amp; grid kotak GitHub. Cepat melihat model yang down/error.
           </p>
         </div>
+
         <div className="flex items-center gap-2">
           {running ? (
             <Button variant="secondary" size="sm" onClick={stopBatch}>
-              Stop Check
+              <span className="inline-block animate-spin mr-1">⟳</span> Stop
             </Button>
           ) : (
             <Button
               variant="primary"
               size="sm"
-              onClick={() => startBatch(filteredModels)}
-              disabled={filteredModels.length === 0}
+              onClick={() => startBatch(liveModels)}
+              disabled={liveModels.length === 0}
             >
-              Check {filteredModels.length} Models
+              Check All ({liveModels.length})
             </Button>
           )}
         </div>
       </div>
 
-      {/* Stat Cards & Health Bar */}
-      <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-        <Card padding="sm" className="text-center">
-          <span className="text-text-muted text-[10px] uppercase font-semibold">Total Models</span>
-          <div className="text-xl font-bold">{stats.total}</div>
-        </Card>
-        <Card padding="sm" className="text-center">
-          <span className="text-text-muted text-[10px] uppercase font-semibold">Online (OK)</span>
-          <div className="text-xl font-bold text-success">{stats.ok}</div>
-        </Card>
-        <Card padding="sm" className="text-center">
-          <span className="text-text-muted text-[10px] uppercase font-semibold">Dead / Error</span>
-          <div className="text-xl font-bold text-error">{stats.error}</div>
-        </Card>
-        <Card padding="sm" className="text-center">
-          <span className="text-text-muted text-[10px] uppercase font-semibold">Health Ratio</span>
-          <div className="text-xl font-bold text-primary">{stats.percent}%</div>
-        </Card>
-      </div>
-
-      {/* Health Bar */}
-      {stats.total > 0 && (
-        <div className="w-full bg-surface-2 rounded-full h-2.5 overflow-hidden flex border border-border-subtle">
-          <div
-            className="bg-success h-full transition-all duration-300"
-            style={{ width: `${(stats.ok / stats.total) * 100}%` }}
-            title={`Online: ${stats.ok}`}
-          />
-          <div
-            className="bg-error h-full transition-all duration-300"
-            style={{ width: `${(stats.error / stats.total) * 100}%` }}
-            title={`Error: ${stats.error}`}
-          />
-        </div>
-      )}
-
-      {/* Controls Card */}
+      {/* Global Overview Bar Card */}
       <Card padding="sm">
-        <div className="flex flex-wrap items-center justify-between gap-3">
-          {/* Search */}
-          <div className="flex-1 min-w-[200px]">
-            <input
-              type="text"
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-              placeholder="Search model ID..."
-              className="w-full rounded-lg border border-border bg-surface-2 px-3 py-1.5 font-mono text-xs text-text-main outline-none"
-            />
+        <div className="flex flex-col gap-2.5">
+          <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
+            <div className="flex items-center gap-3">
+              <span className="font-semibold text-text-main">
+                Total: <span className="font-mono">{globalStats.total}</span> models
+              </span>
+              <span className="flex items-center gap-1.5 text-success">
+                <span className="h-2 w-2 rounded-full bg-success" />
+                Online: <span className="font-mono font-bold">{globalStats.ok}</span>
+              </span>
+              <span className="flex items-center gap-1.5 text-error">
+                <span className="h-2 w-2 rounded-full bg-error" />
+                Error: <span className="font-mono font-bold">{globalStats.error}</span>
+              </span>
+              <span className="flex items-center gap-1.5 text-text-muted">
+                <span className="h-2 w-2 rounded-full bg-border" />
+                Untested: <span className="font-mono">{globalStats.untested}</span>
+              </span>
+            </div>
+            <div className="font-mono font-bold text-xs text-primary">
+              Health: {globalStats.ratio}%
+            </div>
           </div>
 
-          {/* Provider Filter */}
-          <div className="flex items-center gap-1.5">
-            <span className="text-[11px] text-text-muted font-semibold">Provider:</span>
-            <select
-              value={selectedProvider}
-              onChange={(e) => setSelectedProvider(e.target.value)}
-              className="rounded-lg border border-border bg-surface-2 px-2.5 py-1.5 text-xs text-text-main outline-none"
-            >
-              <option value="all">All Providers ({providers.length})</option>
-              {providers.map((p) => (
-                <option key={p} value={p}>
-                  {p}
-                </option>
-              ))}
-            </select>
-          </div>
-
-          {/* Status Filter Tabs */}
-          <div className="flex items-center gap-1 bg-surface-2 p-1 rounded-lg border border-border-subtle text-xs">
-            {[
-              { id: "all", label: "All" },
-              { id: "ok", label: "OK (Green)" },
-              { id: "error", label: "Error (Red)" },
-              { id: "untested", label: "Untested" },
-            ].map((tab) => (
-              <button
-                key={tab.id}
-                onClick={() => setFilterStatus(tab.id)}
-                className={`px-2.5 py-1 rounded font-medium transition-colors ${
-                  filterStatus === tab.id
-                    ? "bg-surface text-primary shadow-sm font-semibold"
-                    : "text-text-muted hover:text-text-main"
-                }`}
-              >
-                {tab.label}
-              </button>
-            ))}
-          </div>
-
-          {/* Concurrency Selector */}
-          <div className="flex items-center gap-1.5 text-xs text-text-muted">
-            <span>Parallel:</span>
-            <select
-              value={concurrency}
-              onChange={(e) => setConcurrency(Number(e.target.value))}
-              disabled={running}
-              className="rounded border border-border bg-surface px-1.5 py-1 text-xs"
-            >
-              <option value={2}>2</option>
-              <option value={4}>4</option>
-              <option value={8}>8</option>
-            </select>
+          {/* Multi-segment Status Bar */}
+          <div className="h-3 w-full rounded-md bg-surface-2 overflow-hidden flex border border-border-subtle p-0.5 gap-0.5">
+            {globalStats.ok > 0 && (
+              <div
+                className="h-full bg-success rounded-sm transition-all duration-300"
+                style={{ width: `${(globalStats.ok / globalStats.total) * 100}%` }}
+                title={`Online: ${globalStats.ok}`}
+              />
+            )}
+            {globalStats.error > 0 && (
+              <div
+                className="h-full bg-error rounded-sm transition-all duration-300"
+                style={{ width: `${(globalStats.error / globalStats.total) * 100}%` }}
+                title={`Error: ${globalStats.error}`}
+              />
+            )}
+            {globalStats.untested > 0 && (
+              <div
+                className="h-full bg-border rounded-sm transition-all duration-300"
+                style={{ width: `${(globalStats.untested / globalStats.total) * 100}%` }}
+                title={`Untested: ${globalStats.untested}`}
+              />
+            )}
           </div>
         </div>
       </Card>
 
-      {/* Model List Table */}
+      {/* Controls & Filter Bar */}
+      <Card padding="sm">
+        <div className="flex flex-wrap items-center justify-between gap-3 text-xs">
+          <div className="flex-1 min-w-[220px]">
+            <input
+              type="text"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              placeholder="Filter model or provider name..."
+              className="w-full rounded-lg border border-border bg-surface-2 px-3 py-1.5 font-mono text-xs text-text-main outline-none"
+            />
+          </div>
+
+          <div className="flex items-center gap-3">
+            <div className="flex items-center gap-2 text-text-muted">
+              <span className="flex items-center gap-1">
+                <span className="h-2.5 w-2.5 rounded-sm bg-success" /> OK
+              </span>
+              <span className="flex items-center gap-1">
+                <span className="h-2.5 w-2.5 rounded-sm bg-error" /> Error
+              </span>
+              <span className="flex items-center gap-1">
+                <span className="h-2.5 w-2.5 rounded-sm bg-warning animate-pulse" /> Checking
+              </span>
+              <span className="flex items-center gap-1">
+                <span className="h-2.5 w-2.5 rounded-sm bg-surface-2 border border-border" /> Untested
+              </span>
+            </div>
+
+            <div className="flex items-center gap-1">
+              <span className="text-text-muted">Speed:</span>
+              <select
+                value={concurrency}
+                onChange={(e) => setConcurrency(Number(e.target.value))}
+                disabled={running}
+                className="rounded border border-border bg-surface-2 px-2 py-1 text-xs"
+              >
+                <option value={2}>2x</option>
+                <option value={4}>4x (Safe)</option>
+                <option value={8}>8x (Fast)</option>
+              </select>
+            </div>
+          </div>
+        </div>
+      </Card>
+
+      {/* Model Inspector Modal / Drawer if a square is selected */}
+      {selectedModel && (
+        <Card padding="sm" className="border-primary/40 bg-surface/90">
+          <div className="flex flex-col gap-2">
+            <div className="flex items-center justify-between gap-2">
+              <div className="flex items-center gap-2">
+                <span className="font-mono font-bold text-sm text-text-main">
+                  {selectedModel.id}
+                </span>
+                {selectedModel.checking ? (
+                  <Badge variant="warning" size="sm">
+                    pinging...
+                  </Badge>
+                ) : selectedModel.ok ? (
+                  <Badge variant="success" size="sm">
+                    200 OK ({selectedModel.latencyMs} ms)
+                  </Badge>
+                ) : selectedModel.testedAt ? (
+                  <Badge variant="error" size="sm">
+                    {selectedModel.status || "FAIL"}
+                  </Badge>
+                ) : (
+                  <Badge variant="default" size="sm">
+                    Not tested
+                  </Badge>
+                )}
+              </div>
+              <div className="flex items-center gap-2">
+                <Button
+                  variant="primary"
+                  size="xs"
+                  disabled={selectedModel.checking || running}
+                  onClick={() => pingOne(selectedModel)}
+                >
+                  Re-test
+                </Button>
+                <Button variant="ghost" size="xs" onClick={() => setSelectedModel(null)}>
+                  Close
+                </Button>
+              </div>
+            </div>
+
+            {selectedModel.error && (
+              <div className="rounded bg-error/10 border border-error/20 p-2 font-mono text-[11px] text-error break-all">
+                {selectedModel.error}
+              </div>
+            )}
+            {selectedModel.note && (
+              <div className="text-[11px] text-text-muted">Note: {selectedModel.note}</div>
+            )}
+            {selectedModel.testedAt && (
+              <div className="text-[10px] text-text-muted">
+                Last tested: {new Date(selectedModel.testedAt).toLocaleTimeString()}
+              </div>
+            )}
+          </div>
+        </Card>
+      )}
+
+      {/* Provider Categorized Grid (GitHub style squares) */}
       {modelsLoading ? (
         <CardSkeleton />
       ) : modelsError ? (
         <Card className="border-error/40">
           <p className="text-xs text-error">{modelsError}</p>
         </Card>
-      ) : (
-        <Card padding="none">
-          <div className="overflow-x-auto">
-            <table className="w-full min-w-[700px] text-left text-xs">
-              <thead className="border-b border-border-subtle text-text-muted bg-surface/50">
-                <tr>
-                  <th className="px-3 py-2 font-semibold w-8">#</th>
-                  <th className="px-3 py-2 font-semibold">Model ID</th>
-                  <th className="px-3 py-2 font-semibold">Status Upstream</th>
-                  <th className="px-3 py-2 font-semibold text-right">Latency</th>
-                  <th className="px-3 py-2 font-semibold">Error Details</th>
-                  <th className="px-3 py-2 font-semibold text-right">Action</th>
-                </tr>
-              </thead>
-              <tbody>
-                {filteredModels.length === 0 ? (
-                  <tr>
-                    <td colSpan={6} className="p-6 text-center text-xs text-text-muted">
-                      No models match the current filter.
-                    </td>
-                  </tr>
-                ) : (
-                  filteredModels.map((m, idx) => {
-                    const res = probeResults[m.id];
-                    const isChecking = res?.checking;
-                    const isOk = res && res.ok;
-                    const isErr = res && !res.ok && !isChecking;
-
-                    return (
-                      <tr
-                        key={m.id}
-                        className="border-b border-border-subtle/40 last:border-0 hover:bg-surface-2/40 transition-colors"
-                      >
-                        <td className="px-3 py-2 text-text-muted font-mono text-[11px]">
-                          {idx + 1}
-                        </td>
-                        <td className="px-3 py-2">
-                          <div className="font-mono font-medium text-text-main text-[12px]">
-                            {m.id}
-                          </div>
-                        </td>
-                        <td className="px-3 py-2">
-                          {isChecking ? (
-                            <Badge variant="warning" size="sm">
-                              <span className="inline-block animate-spin mr-1">⟳</span> pinging...
-                            </Badge>
-                          ) : isOk ? (
-                            <Badge variant="success" size="sm">
-                              ● 200 OK
-                            </Badge>
-                          ) : isErr ? (
-                            <Badge variant="error" size="sm">
-                              ✕ {res.status || "ERR"}
-                            </Badge>
-                          ) : (
-                            <Badge variant="default" size="sm">
-                              ○ untested
-                            </Badge>
-                          )}
-                        </td>
-                        <td className="px-3 py-2 text-right font-mono text-[11px] tabular-nums">
-                          {res?.latencyMs ? (
-                            <span className={res.latencyMs > 2000 ? "text-warning" : "text-success"}>
-                              {res.latencyMs} ms
-                            </span>
-                          ) : (
-                            "—"
-                          )}
-                        </td>
-                        <td className="px-3 py-2 max-w-[280px]">
-                          {res?.error ? (
-                            <span
-                              className="font-mono text-[10px] text-error line-clamp-1 block cursor-pointer hover:line-clamp-none"
-                              title={res.error}
-                            >
-                              {res.error}
-                            </span>
-                          ) : res?.note ? (
-                            <span className="text-[10px] text-text-muted">{res.note}</span>
-                          ) : (
-                            <span className="text-text-muted">—</span>
-                          )}
-                        </td>
-                        <td className="px-3 py-2 text-right">
-                          <Button
-                            variant="ghost"
-                            size="xs"
-                            disabled={isChecking || running}
-                            onClick={() => pingOne(m)}
-                          >
-                            Test
-                          </Button>
-                        </td>
-                      </tr>
-                    );
-                  })
-                )}
-              </tbody>
-            </table>
-          </div>
+      ) : grouped.length === 0 ? (
+        <Card padding="sm">
+          <p className="text-xs text-text-muted text-center py-4">
+            No models found matching &quot;{search}&quot;
+          </p>
         </Card>
+      ) : (
+        <div className="flex flex-col gap-3">
+          {grouped.map((group) => {
+            const total = group.models.length;
+            const ok = group.ok;
+            const err = group.error;
+            const untested = group.untested;
+            const tested = ok + err;
+            const groupRatio = tested > 0 ? Math.round((ok / tested) * 100) : 0;
+            const isExpanded = expandedProvider === group.provider;
+
+            return (
+              <Card key={group.provider} padding="sm" className="hover:border-border transition-colors">
+                <div className="flex flex-col gap-2.5">
+                  {/* Group Header & Sub-bar */}
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div className="flex items-center gap-2">
+                      <span className="font-mono font-bold text-xs text-text-main uppercase tracking-wider">
+                        {group.provider}
+                      </span>
+                      <Badge variant="default" size="sm">
+                        {total} models
+                      </Badge>
+                      {ok > 0 && (
+                        <span className="text-[11px] font-mono font-semibold text-success">
+                          {ok} ok
+                        </span>
+                      )}
+                      {err > 0 && (
+                        <span className="text-[11px] font-mono font-semibold text-error">
+                          {err} err
+                        </span>
+                      )}
+                    </div>
+
+                    <div className="flex items-center gap-2">
+                      {tested > 0 && (
+                        <span className="font-mono text-[11px] text-text-muted">
+                          {groupRatio}%
+                        </span>
+                      )}
+                      <Button
+                        variant="secondary"
+                        size="xs"
+                        onClick={() => startBatch(group.models)}
+                        disabled={running}
+                      >
+                        Check Group
+                      </Button>
+                      <Button
+                        variant="ghost"
+                        size="xs"
+                        onClick={() =>
+                          setExpandedProvider(isExpanded ? null : group.provider)
+                        }
+                      >
+                        {isExpanded ? "Collapse" : "Table"}
+                      </Button>
+                    </div>
+                  </div>
+
+                  {/* Provider Upstream Progress Bar */}
+                  <div className="h-1.5 w-full bg-surface-2 rounded-full overflow-hidden flex">
+                    {ok > 0 && (
+                      <div
+                        className="h-full bg-success"
+                        style={{ width: `${(ok / total) * 100}%` }}
+                      />
+                    )}
+                    {err > 0 && (
+                      <div
+                        className="h-full bg-error"
+                        style={{ width: `${(err / total) * 100}%` }}
+                      />
+                    )}
+                    {untested > 0 && (
+                      <div
+                        className="h-full bg-border"
+                        style={{ width: `${(untested / total) * 100}%` }}
+                      />
+                    )}
+                  </div>
+
+                  {/* GitHub Style Contribution Squares */}
+                  <div className="flex flex-wrap gap-1.5 p-1 bg-surface-2/40 rounded-lg border border-border-subtle/50">
+                    {group.models.map((m) => {
+                      const res = probeResults[m.id];
+                      const isChecking = res?.checking;
+                      const isOk = res && res.ok;
+                      const isErr = res && !res.ok && !isChecking;
+                      const isSelected = selectedModel?.id === m.id;
+
+                      let bgClass = "bg-surface border-border hover:border-text-muted";
+                      if (isChecking) bgClass = "bg-warning animate-pulse border-warning";
+                      else if (isOk) bgClass = "bg-success border-success/70 hover:brightness-110";
+                      else if (isErr) bgClass = "bg-error border-error/70 hover:brightness-110";
+
+                      return (
+                        <button
+                          key={m.id}
+                          onClick={() => setSelectedModel(res || { id: m.id })}
+                          title={`${m.id}\nStatus: ${isChecking ? "checking..." : isOk ? "200 OK (" + res.latencyMs + "ms)" : isErr ? "ERROR: " + res.error : "untested"}`}
+                          className={`h-4 w-4 rounded-sm border transition-all cursor-pointer ${bgClass} ${
+                            isSelected ? "ring-2 ring-primary ring-offset-1 ring-offset-surface scale-125 z-10" : ""
+                          }`}
+                        />
+                      );
+                    })}
+                  </div>
+
+                  {/* Optional Expanded Detailed Table */}
+                  {isExpanded && (
+                    <div className="mt-2 overflow-x-auto border-t border-border-subtle pt-2">
+                      <table className="w-full text-left text-xs font-mono">
+                        <thead>
+                          <tr className="text-text-muted text-[10px]">
+                            <th className="py-1 px-2">Model</th>
+                            <th className="py-1 px-2">Status</th>
+                            <th className="py-1 px-2 text-right">Latency</th>
+                            <th className="py-1 px-2">Details</th>
+                            <th className="py-1 px-2 text-right">Action</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {group.models.map((m) => {
+                            const res = probeResults[m.id];
+                            return (
+                              <tr
+                                key={m.id}
+                                className="border-b border-border-subtle/30 last:border-0 hover:bg-surface-2"
+                              >
+                                <td className="py-1 px-2 truncate max-w-[200px]">{m.id}</td>
+                                <td className="py-1 px-2">
+                                  {res?.checking ? (
+                                    <span className="text-warning">⟳ ping...</span>
+                                  ) : res?.ok ? (
+                                    <span className="text-success">● OK</span>
+                                  ) : res?.testedAt ? (
+                                    <span className="text-error">✕ {res.status || "ERR"}</span>
+                                  ) : (
+                                    <span className="text-text-muted">○ -</span>
+                                  )}
+                                </td>
+                                <td className="py-1 px-2 text-right text-text-muted">
+                                  {res?.latencyMs ? `${res.latencyMs}ms` : "—"}
+                                </td>
+                                <td className="py-1 px-2 text-[10px] text-error truncate max-w-[220px]">
+                                  {res?.error || "—"}
+                                </td>
+                                <td className="py-1 px-2 text-right">
+                                  <button
+                                    onClick={() => pingOne(m)}
+                                    disabled={running || res?.checking}
+                                    className="text-primary hover:underline"
+                                  >
+                                    Ping
+                                  </button>
+                                </td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+                </div>
+              </Card>
+            );
+          })}
+        </div>
       )}
     </div>
   );
