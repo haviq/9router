@@ -5,7 +5,8 @@ import { Card, Badge, Button, CardSkeleton } from "@/shared/components";
 import useLiveModels from "@/shared/hooks/useLiveModels";
 
 export default function ModelStatusClient() {
-  const { models: rawLiveModels, loading: modelsLoading, error: modelsError } = useLiveModels();
+  const { models: fallbackModels, loading: modelsLoading, error: modelsError } = useLiveModels();
+  const [serverActiveModels, setServerActiveModels] = useState([]);
   const [probeResults, setProbeResults] = useState({});
   const [providerNodes, setProviderNodes] = useState([]);
   const [running, setRunning] = useState(false);
@@ -15,7 +16,7 @@ export default function ModelStatusClient() {
   const [expandedProvider, setExpandedProvider] = useState(null);
   const cancelRef = useRef(false);
 
-  // Load cached status & provider nodes on mount
+  // Load cached status & active models & provider nodes on mount
   useEffect(() => {
     (async () => {
       try {
@@ -26,6 +27,9 @@ export default function ModelStatusClient() {
 
         if (resProbe?.ok) {
           const data = await resProbe.json();
+          if (Array.isArray(data.activeModels) && data.activeModels.length > 0) {
+            setServerActiveModels(data.activeModels);
+          }
           if (Array.isArray(data.results)) {
             const map = {};
             data.results.forEach((r) => {
@@ -42,6 +46,9 @@ export default function ModelStatusClient() {
       } catch {}
     })();
   }, []);
+
+  // Gunakan serverActiveModels (648 model asli aktif), fallback ke raw live models
+  const rawLiveModels = serverActiveModels.length > 0 ? serverActiveModels : fallbackModels;
 
   // Mapping UUID node id -> prefix yang bersih (kl, ifx, mg, ar, cn, dll)
   const nodePrefixMap = useMemo(() => {

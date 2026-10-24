@@ -64,6 +64,25 @@ async function runBatchProbe(models, concurrency = DEFAULT_CONCURRENCY) {
 // GET /api/models/probe-matrix
 export async function GET() {
   try {
+    // Fetch active routable models internally via internal headers
+    let activeModels = [];
+    try {
+      const baseUrl = `http://127.0.0.1:${process.env.PORT || 20128}`;
+      const { getInternalHeaders } = await import("../test/ping");
+      const headers = await getInternalHeaders();
+      const v1Res = await fetch(`${baseUrl}/v1/models`, { headers, cache: "no-store" });
+      if (v1Res.ok) {
+        const data = await v1Res.json();
+        if (Array.isArray(data?.data)) {
+          activeModels = data.data.map((m) => ({
+            id: m.id,
+            model: m.id,
+            kind: m.kind || "llm",
+          }));
+        }
+      }
+    } catch {}
+
     const cacheArray = Array.from(liveCache.values());
     const total = cacheArray.length;
     const healthy = cacheArray.filter((m) => m.ok).length;
@@ -71,6 +90,7 @@ export async function GET() {
 
     return NextResponse.json({
       lastRun: lastBatchRun,
+      activeModels,
       stats: {
         total,
         healthy,
