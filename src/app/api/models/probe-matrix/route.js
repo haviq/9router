@@ -64,13 +64,23 @@ async function runBatchProbe(models, concurrency = DEFAULT_CONCURRENCY) {
 // GET /api/models/probe-matrix
 export async function GET() {
   try {
-    // Fetch active routable models internally via internal headers
+    // Fetch active routable models internally via direct database API key
     let activeModels = [];
     try {
-      const baseUrl = `http://127.0.0.1:${process.env.PORT || 20128}`;
-      const { getInternalHeaders } = await import("../test/ping");
-      const headers = await getInternalHeaders();
-      const v1Res = await fetch(`${baseUrl}/v1/models`, { headers, cache: "no-store" });
+      const { getApiKeys } = await import("@/lib/db/repos/apiKeysRepo.js");
+      const keys = await getApiKeys().catch(() => []);
+      const activeKey = keys.find((k) => k.isActive)?.key || keys[0]?.key || "";
+      
+      const port = process.env.PORT || 20128;
+      const headers = { "Content-Type": "application/json" };
+      if (activeKey) headers["Authorization"] = `Bearer ${activeKey}`;
+      
+      const v1Res = await fetch(`http://127.0.0.1:${port}/v1/models`, {
+        headers,
+        cache: "no-store",
+        signal: AbortSignal.timeout(5000),
+      });
+      
       if (v1Res.ok) {
         const data = await v1Res.json();
         if (Array.isArray(data?.data)) {
@@ -81,7 +91,9 @@ export async function GET() {
           }));
         }
       }
-    } catch {}
+    } catch (e) {
+      console.error("[probe-matrix] Failed to fetch active models:", e);
+    }
 
     const cacheArray = Array.from(liveCache.values());
     const total = cacheArray.length;
