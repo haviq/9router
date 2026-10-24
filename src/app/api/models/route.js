@@ -1,19 +1,52 @@
 import { NextResponse } from "next/server";
-import { getModelAliases, setModelAlias, getCustomModels } from "@/models";
+import { getModelAliases, getCustomModels, getProviderConnections, getProviderNodes } from "@/models";
 import { getDisabledModels } from "@/lib/disabledModelsDb";
 import { AI_MODELS } from "@/shared/constants/config";
 import { getProviderAlias, ALIAS_TO_ID } from "@/shared/constants/providers";
 import { getCapabilitiesForModel } from "open-sse/providers/capabilities.js";
 
-// GET /api/models - Get models with aliases
+// GET /api/models - Get models for dashboard with aliases and clean active providers
 export async function GET() {
   try {
-    const modelAliases = await getModelAliases();
-    const disabled = await getDisabledModels();
+    const modelAliases = await getModelAliases().catch(() => ({}));
+    const disabled = await getDisabledModels().catch(() => ({}));
+    const [connections, nodes] = await Promise.all([
+      getProviderConnections().catch(() => []),
+      getProviderNodes().catch(() => []),
+    ]);
 
+    // Kumpulkan provider aktif dari connections
+    const activeProviders = new Set();
+    connections.forEach((c) => {
+      if (c && c.isActive !== false) {
+        if (c.provider) activeProviders.add(c.provider.toLowerCase());
+        const alias = getProviderAlias(c.provider);
+        if (alias) activeProviders.add(alias.toLowerCase());
+      }
+    });
+
+    // Mapping UUID node -> clean prefix (kl, ifx, mg, cn, ar, at, etc.)
+    const nodePrefixMap = {};
+    nodes.forEach((n) => {
+      if (!n) return;
+      const isDisabled = n.disabled || n.isDisabled || n.isActive === false;
+      if (!isDisabled) {
+        const cleanPrefix = (n.prefix || n.name || "custom").toLowerCase().replace(/\/.*$/, "");
+        if (n.id) nodePrefixMap[n.id.toLowerCase()] = cleanPrefix;
+        activeProviders.add(cleanPrefix);
+        if (n.id) activeProviders.add(n.id.toLowerCase());
+      }
+    });
+
+    // Filter AI_MODELS: HANYA yang provider-nya benar-benar aktif punya koneksi di instance user!
+    // Model dummy bawaan (SAMBA, LOCAL-DEVICE, SELFHOSTED-*, MMF, dll) yang tidak terhubung otomatis DIBUANG!
     const models = AI_MODELS
       .filter((m) => {
-        const alias = getProviderAlias(m.provider) || m.provider;
+        const alias = (getProviderAlias(m.provider) || m.provider || "").toLowerCase();
+        const rawProv = (m.provider || "").toLowerCase();
+        if (!activeProviders.has(alias) && !activeProviders.has(rawProv)) {
+          return false;
+        }
         const list = disabled[alias] || disabled[m.provider] || [];
         return !list.includes(m.model);
       })
@@ -37,28 +70,27 @@ export async function GET() {
         };
       });
 
-    // Custom models ride along; their stored caps override the name heuristic.
-    // A custom row whose provider alias routes to an already-listed model is a
-    // pure shadow: the real entry wins (and is listed first), but this row would
-    // land later with the same routedModel key and the client's last-write-wins
-    // map then serves its thinner caps (a pre-registry "add custom model" row
-    // stores {vision, reasoning} only — no contextWindow). Drop the shadow and
-    // resolve the survivors' provider id, not the UI alias: the capability
-    // tables are keyed by provider id, and an alias like `ocg` misses the
-    // provider-scoped entries and falls back to the generic patterns.
+    // Masukkan custom models dari providerNodes & customModels
     const seenFull = new Set(models.map((m) => m.fullModel));
     const seenRouted = new Set(models.map((m) => m.routedModel));
-    const customModels = (await getCustomModels()).filter((m) => {
-      if (!m?.id || (m.kind || m.type || "llm") !== "llm") return false;
-      if (seenRouted.has(`${m.providerAlias}/${m.id}`)) return false;
-      return !seenFull.has(`${m.providerAlias}/${m.id}`);
+    const rawCustomModels = (await getCustomModels().catch(() => [])).filter((m) => {
+      return m?.id && (m.kind || m.type || "llm") === "llm";
     });
-    for (const m of customModels) {
-      const fullModel = `${m.providerAlias}/${m.id}`;
-      const providerId = ALIAS_TO_ID[m.providerAlias] || m.providerAlias;
+
+    for (const m of rawCustomModels) {
+      const rawAlias = (m.providerAlias || "").toLowerCase();
+      // Petakan jika providerAlias berupa UUID openai-compatible-chat-...
+      const cleanAlias = nodePrefixMap[rawAlias] || m.providerAlias;
+
+      const fullModel = `${cleanAlias}/${m.id}`;
+      if (seenRouted.has(fullModel) || seenFull.has(fullModel)) continue;
+      seenFull.add(fullModel);
+      seenRouted.add(fullModel);
+
+      const providerId = ALIAS_TO_ID[cleanAlias] || cleanAlias;
       const c = getCapabilitiesForModel(providerId, m.id);
       models.push({
-        provider: m.providerAlias,
+        provider: cleanAlias,
         model: m.id,
         name: m.name || m.id,
         fullModel,
@@ -70,45 +102,12 @@ export async function GET() {
           reasoning: c.reasoning,
           contextWindow: c.contextWindow,
           maxOutput: c.maxOutput,
-          ...(m.caps || {}),
         },
       });
     }
 
-    return NextResponse.json({ models });
-  } catch (error) {
-    console.log("Error fetching models:", error);
-    return NextResponse.json({ error: "Failed to fetch models" }, { status: 500 });
-  }
-}
-
-// PUT /api/models - Update model alias
-export async function PUT(request) {
-  try {
-    const body = await request.json();
-    const { model, alias } = body;
-
-    if (!model || !alias) {
-      return NextResponse.json({ error: "Model and alias required" }, { status: 400 });
-    }
-
-    const modelAliases = await getModelAliases();
-
-    // Check if alias already exists for different model
-    const existingModel = Object.entries(modelAliases).find(
-      ([key, val]) => val === alias && key !== model
-    );
-
-    if (existingModel) {
-      return NextResponse.json({ error: "Alias already in use" }, { status: 400 });
-    }
-
-    // Update alias
-    await setModelAlias(model, alias);
-
-    return NextResponse.json({ success: true, model, alias });
-  } catch (error) {
-    console.log("Error updating alias:", error);
-    return NextResponse.json({ error: "Failed to update alias" }, { status: 500 });
+    return NextResponse.json(models);
+  } catch (err) {
+    return NextResponse.json({ error: err.message }, { status: 500 });
   }
 }
