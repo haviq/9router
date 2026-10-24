@@ -5,8 +5,9 @@ import { Card, Badge, Button, CardSkeleton } from "@/shared/components";
 import useLiveModels from "@/shared/hooks/useLiveModels";
 
 export default function ModelStatusClient() {
-  const { models: liveModels, loading: modelsLoading, error: modelsError } = useLiveModels();
+  const { models: rawLiveModels, loading: modelsLoading, error: modelsError } = useLiveModels();
   const [probeResults, setProbeResults] = useState({});
+  const [providerNodes, setProviderNodes] = useState([]);
   const [running, setRunning] = useState(false);
   const [selectedModel, setSelectedModel] = useState(null);
   const [search, setSearch] = useState("");
@@ -14,13 +15,17 @@ export default function ModelStatusClient() {
   const [expandedProvider, setExpandedProvider] = useState(null);
   const cancelRef = useRef(false);
 
-  // Load cached status on mount
+  // Load cached status & provider nodes on mount
   useEffect(() => {
     (async () => {
       try {
-        const res = await fetch("/api/models/probe-matrix", { cache: "no-store" });
-        if (res.ok) {
-          const data = await res.json();
+        const [resProbe, resNodes] = await Promise.all([
+          fetch("/api/models/probe-matrix", { cache: "no-store" }),
+          fetch("/api/provider-nodes", { cache: "no-store" }).catch(() => null),
+        ]);
+
+        if (resProbe?.ok) {
+          const data = await resProbe.json();
           if (Array.isArray(data.results)) {
             const map = {};
             data.results.forEach((r) => {
@@ -29,9 +34,56 @@ export default function ModelStatusClient() {
             setProbeResults(map);
           }
         }
+
+        if (resNodes?.ok) {
+          const nodes = await resNodes.json();
+          if (Array.isArray(nodes)) setProviderNodes(nodes);
+        }
       } catch {}
     })();
   }, []);
+
+  // Mapping UUID node id -> prefix yang bersih (kl, ifx, mg, ar, cn, dll)
+  const nodePrefixMap = useMemo(() => {
+    const map = {};
+    providerNodes.forEach((node) => {
+      if (!node) return;
+      const prefix = node.prefix || node.name || "";
+      if (node.id) map[node.id.toLowerCase()] = prefix.toLowerCase();
+    });
+    return map;
+  }, [providerNodes]);
+
+  // Normalisasi model ID agar prefix tampil bersih dan rapi (misal kl/model bukan UUID/model)
+  const liveModels = useMemo(() => {
+    return rawLiveModels.map((m) => {
+      let id = m.id || m.routedModel || m.fullModel || "";
+      let displayProv = "direct";
+
+      if (id.includes("/")) {
+        const parts = id.split("/");
+        const rawProv = parts[0];
+        const rest = parts.slice(1).join("/");
+        const mapped = nodePrefixMap[rawProv.toLowerCase()];
+
+        if (mapped) {
+          displayProv = mapped;
+          id = `${mapped}/${rest}`;
+        } else {
+          displayProv = rawProv;
+        }
+      } else if (m.provider) {
+        const mapped = nodePrefixMap[m.provider.toLowerCase()];
+        displayProv = mapped || m.provider;
+      }
+
+      return {
+        ...m,
+        id,
+        cleanProvider: displayProv,
+      };
+    });
+  }, [rawLiveModels, nodePrefixMap]);
 
   // Single model probe
   const pingOne = useCallback(async (modelItem) => {
@@ -52,7 +104,6 @@ export default function ModelStatusClient() {
         ...prev,
         [id]: { ...data, checking: false },
       }));
-      // Update selected detail if currently inspected
       setSelectedModel((cur) => (cur?.id === id ? { ...data, checking: false } : cur));
     } catch (err) {
       const failed = {
@@ -101,14 +152,19 @@ export default function ModelStatusClient() {
     setRunning(false);
   }, []);
 
-  // Group models by provider with stats
+  // Group models by provider with stats & SORTING HIJAU DI ATAS
   const grouped = useMemo(() => {
     const groups = {};
     const query = search.trim().toLowerCase();
 
     liveModels.forEach((m) => {
-      if (query && !m.id.toLowerCase().includes(query)) return;
-      const prov = m.id.includes("/") ? m.id.split("/")[0] : "direct";
+      const prov = m.cleanProvider || (m.id.includes("/") ? m.id.split("/")[0] : "direct");
+      const idLower = m.id.toLowerCase();
+      const provLower = prov.toLowerCase();
+
+      // Search matches model id, clean provider name, or prefix
+      if (query && !idLower.includes(query) && !provLower.includes(query)) return;
+
       if (!groups[prov]) {
         groups[prov] = { provider: prov, models: [], ok: 0, error: 0, untested: 0 };
       }
@@ -120,7 +176,23 @@ export default function ModelStatusClient() {
       else groups[prov].error++;
     });
 
-    return Object.values(groups).sort((a, b) => b.models.length - a.models.length);
+    // Di dalam tiap grup, urutkan kotak model: HIJAU (OK) di depan!
+    Object.values(groups).forEach((g) => {
+      g.models.sort((a, b) => {
+        const resA = probeResults[a.id];
+        const resB = probeResults[b.id];
+        const scoreA = resA?.ok ? 3 : resA?.checking ? 2 : !resA ? 1 : 0;
+        const scoreB = resB?.ok ? 3 : resB?.checking ? 2 : !resB ? 1 : 0;
+        return scoreB - scoreA;
+      });
+    });
+
+    // Sort grup provider: YANG ADA HIJAUNYA PALING BANYAK DI PALING ATAS!
+    return Object.values(groups).sort((a, b) => {
+      if (b.ok !== a.ok) return b.ok - a.ok; // Hijau terbanyak di atas
+      if (a.error !== b.error) return a.error - b.error; // Error lebih sedikit di atas
+      return b.models.length - a.models.length;
+    });
   }, [liveModels, probeResults, search]);
 
   // Global aggregate stats
@@ -149,7 +221,7 @@ export default function ModelStatusClient() {
             Upstream Status Matrix
           </h1>
           <p className="text-xs text-text-muted">
-            Pemeriksaan upstream model bergaya status bar &amp; grid kotak GitHub. Cepat melihat model yang down/error.
+            Pemeriksaan upstream model bergaya kotak GitHub. Provider aktif &amp; hijau otomatis diurutkan ke paling atas.
           </p>
         </div>
 
@@ -232,7 +304,7 @@ export default function ModelStatusClient() {
               type="text"
               value={search}
               onChange={(e) => setSearch(e.target.value)}
-              placeholder="Filter model or provider name..."
+              placeholder="Search model ID or provider prefix (e.g. kl, ifx, mg, cn)..."
               className="w-full rounded-lg border border-border bg-surface-2 px-3 py-1.5 font-mono text-xs text-text-main outline-none"
             />
           </div>
@@ -329,7 +401,7 @@ export default function ModelStatusClient() {
         </Card>
       )}
 
-      {/* Provider Categorized Grid (GitHub style squares) */}
+      {/* Provider Categorized Grid (GitHub style squares with OK sorted first) */}
       {modelsLoading ? (
         <CardSkeleton />
       ) : modelsError ? (
@@ -366,12 +438,14 @@ export default function ModelStatusClient() {
                         {total} models
                       </Badge>
                       {ok > 0 && (
-                        <span className="text-[11px] font-mono font-semibold text-success">
-                          {ok} ok
+                        <span className="text-[11px] font-mono font-semibold text-success flex items-center gap-1">
+                          <span className="h-2 w-2 rounded-full bg-success" />
+                          {ok} online
                         </span>
                       )}
                       {err > 0 && (
-                        <span className="text-[11px] font-mono font-semibold text-error">
+                        <span className="text-[11px] font-mono font-semibold text-error flex items-center gap-1">
+                          <span className="h-2 w-2 rounded-full bg-error" />
                           {err} err
                         </span>
                       )}
@@ -426,7 +500,7 @@ export default function ModelStatusClient() {
                   </div>
 
                   {/* GitHub Style Contribution Squares */}
-                  <div className="flex flex-wrap gap-1.5 p-1 bg-surface-2/40 rounded-lg border border-border-subtle/50">
+                  <div className="flex flex-wrap gap-1.5 p-1.5 bg-surface-2/40 rounded-lg border border-border-subtle/50">
                     {group.models.map((m) => {
                       const res = probeResults[m.id];
                       const isChecking = res?.checking;
@@ -436,7 +510,7 @@ export default function ModelStatusClient() {
 
                       let bgClass = "bg-surface border-border hover:border-text-muted";
                       if (isChecking) bgClass = "bg-warning animate-pulse border-warning";
-                      else if (isOk) bgClass = "bg-success border-success/70 hover:brightness-110";
+                      else if (isOk) bgClass = "bg-success border-success/70 hover:brightness-110 shadow-sm shadow-success/20";
                       else if (isErr) bgClass = "bg-error border-error/70 hover:brightness-110";
 
                       return (
@@ -478,9 +552,9 @@ export default function ModelStatusClient() {
                                   {res?.checking ? (
                                     <span className="text-warning">⟳ ping...</span>
                                   ) : res?.ok ? (
-                                    <span className="text-success">● OK</span>
+                                    <span className="text-success font-semibold">● OK</span>
                                   ) : res?.testedAt ? (
-                                    <span className="text-error">✕ {res.status || "ERR"}</span>
+                                    <span className="text-error font-semibold">✕ {res.status || "ERR"}</span>
                                   ) : (
                                     <span className="text-text-muted">○ -</span>
                                   )}
