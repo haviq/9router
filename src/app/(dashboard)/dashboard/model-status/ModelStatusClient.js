@@ -409,9 +409,9 @@ export default function ModelStatusClient() {
       )}
 
       {/* Provider Categorized Grid (GitHub style squares with OK sorted first) */}
-      {modelsLoading ? (
+      {modelsLoading && !rawLiveModels.length ? (
         <CardSkeleton />
-      ) : modelsError ? (
+      ) : modelsError && !rawLiveModels.length ? (
         <Card className="border-error/40">
           <p className="text-xs text-error">{modelsError}</p>
         </Card>
