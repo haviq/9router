@@ -3,13 +3,16 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Card, Badge, Button, CardSkeleton } from "@/shared/components";
 
-// Three views over the same question: which combination of model + payload
+// Four views over the same question: which combination of model + payload
 // actually lands. Presets are the inputs; sessions are the evidence; the
-// leaderboard is the ranking that comes out of the evidence.
+// leaderboard is the ranking; drift + tune are the maintenance layer that keeps
+// the ranking from going stale.
 const TABS = [
   { id: "presets", label: "Presets", icon: "bookmark" },
   { id: "sessions", label: "Sessions", icon: "history" },
   { id: "leaderboard", label: "Leaderboard", icon: "leaderboard" },
+  { id: "drift", label: "Drift", icon: "trending_down" },
+  { id: "tune", label: "Auto-Tune", icon: "auto_fix" },
 ];
 
 function pct(n) {
@@ -21,9 +24,38 @@ export default function JbToolsClient() {
   const [presets, setPresets] = useState([]);
   const [sessions, setSessions] = useState([]);
   const [leaderboard, setLeaderboard] = useState({ models: [], bestPayloads: [] });
+  const [drift, setDrift] = useState(null);
+  const [tune, setTune] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+
+  // Drift view state: pass current = local probe snapshot from the Model Status
+  // kv scope so the page can diff and (optionally) save.
+  const loadDrift = useCallback(async (save = false) => {
+    setBusy(true);
+    try {
+      const snap = await fetch("/api/models/probe-matrix", { cache: "no-store" }).then((r) => (r.ok ? r.json() : null)).catch(() => null);
+      const current = {};
+      (snap?.results || []).forEach((r) => { current[r.id] = { ok: !!r.ok, latencyMs: r.latencyMs || 0, error: r.error || null }; });
+      const res = await fetch("/api/developer/jb-drift", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ current, save }),
+      });
+      if (res.ok) setDrift(await res.json());
+    } finally { setBusy(false); }
+  }, []);
+
+  const loadTune = useCallback(async (apply = false) => {
+    setBusy(true);
+    try {
+      const res = apply
+        ? await fetch("/api/developer/jb-tune", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ combo: "jb" }) })
+        : await fetch("/api/developer/jb-tune?combo=jb", { cache: "no-store" });
+      if (res.ok) setTune(await res.json());
+    } finally { setBusy(false); }
+  }, []);
 
   // New preset form
   const [form, setForm] = useState({
@@ -329,6 +361,110 @@ export default function JbToolsClient() {
                   </div>
                 )}
               </Card>
+            </div>
+          )}
+          {tab === "drift" && (
+            <div className="flex flex-col gap-3">
+              <Card padding="sm" className="flex flex-col gap-2.5">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div>
+                    <div className="text-[11px] uppercase tracking-wide text-text-muted">Model Drift</div>
+                    <p className="text-xs text-text-muted mt-0.5">Banding probe terakhir vs baseline. Regression dulu (yang butuh aksi).</p>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <Button variant="secondary" size="xs" onClick={() => loadDrift(false)} disabled={busy}>Check</Button>
+                    <Button variant="primary" size="xs" onClick={() => loadDrift(true)} disabled={busy}>Check + Save Baseline</Button>
+                  </div>
+                </div>
+              </Card>
+
+              {!drift ? (
+                <Card padding="sm"><p className="text-xs text-text-muted">Klik Check untuk banding dengan baseline. Belum ada baseline? Klik Check + Save Baseline dulu.</p></Card>
+              ) : (
+                <Card padding="none">
+                  <div className="px-3 py-2 text-[11px] uppercase tracking-wide text-text-muted border-b border-border-subtle">
+                    Compared: {drift.compared ?? 0} · Baseline: {drift.baselineSize ?? 0}
+                    {drift.saved && <span className="ml-2 text-primary">(baseline updated)</span>}
+                  </div>
+                  {(drift.drift || []).length === 0 ? (
+                    <p className="p-3 text-xs text-text-muted">Tidak ada drift. Semua model stabil dibanding baseline.</p>
+                  ) : (
+                    <div className="overflow-x-auto">
+                      <table className="w-full min-w-[600px] text-left text-xs">
+                        <thead className="border-b border-border-subtle/60 text-text-muted">
+                          <tr>
+                            <th className="px-3 py-2">Model</th>
+                            <th className="px-3 py-2">Verdict</th>
+                            <th className="px-3 py-2">Reason</th>
+                            <th className="px-3 py-2 text-right">Before</th>
+                            <th className="px-3 py-2 text-right">Now</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {drift.drift.map((d) => (
+                            <tr key={d.model} className="border-b border-border-subtle/40 last:border-0 hover:bg-surface-2/40">
+                              <td className="px-3 py-2 font-mono truncate max-w-[260px]">{d.model}</td>
+                              <td className="px-3 py-2">
+                                <Badge
+                                  variant={d.verdict === "regression" ? "error" : d.verdict === "slower" ? "warning" : "success"}
+                                  size="sm"
+                                >
+                                  {d.verdict}
+                                </Badge>
+                              </td>
+                              <td className="px-3 py-2 text-text-muted truncate max-w-[220px]">{d.reason}</td>
+                              <td className="px-3 py-2 text-right font-mono">{d.previous?.ok ? `${d.previous.latencyMs}ms` : "fail"}</td>
+                              <td className="px-3 py-2 text-right font-mono">{d.current?.ok ? `${d.current.latencyMs}ms` : "fail"}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+                </Card>
+              )}
+            </div>
+          )}
+
+          {tab === "tune" && (
+            <div className="flex flex-col gap-3">
+              <Card padding="sm" className="flex flex-col gap-2.5">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div>
+                    <div className="text-[11px] uppercase tracking-wide text-text-muted">Combo Auto-Tune</div>
+                    <p className="text-xs text-text-muted mt-0.5">Reorder seat combo sesuai health + latency terakhir. Yang jawab cepat ditaruh depan.</p>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <Button variant="secondary" size="xs" onClick={() => loadTune(false)} disabled={busy}>Preview</Button>
+                    <Button variant="primary" size="xs" onClick={() => loadTune(true)} disabled={busy || !tune?.changed}>Apply Reorder</Button>
+                  </div>
+                </div>
+              </Card>
+
+              {!tune ? (
+                <Card padding="sm"><p className="text-xs text-text-muted">Klik Preview buat lihat urutan usulan.</p></Card>
+              ) : (
+                <Card padding="sm" className="flex flex-col gap-3">
+                  <div className="text-xs text-text-muted">
+                    Combo: <span className="font-mono font-bold text-text-main">{tune.combo}</span>
+                    {tune.changed ? <span className="ml-2 text-warning font-semibold">perubahan tersedia</span> : <span className="ml-2 text-success font-semibold">sudah optimal</span>}
+                  </div>
+                  <div className="flex flex-col gap-1.5">
+                    <div className="text-[11px] uppercase tracking-wide text-text-muted">Sekarang → Usulan</div>
+                    {tune.seats?.map((seat, i) => {
+                      const newIdx = (tune.proposedOrder || tune.order || []).indexOf(seat);
+                      const moved = newIdx !== i;
+                      return (
+                        <div key={seat} className="flex items-center gap-3 text-xs font-mono">
+                          <span className="text-text-muted w-4">{i + 1}.</span>
+                          <span className="truncate max-w-[320px]">{seat}</span>
+                          {moved && <span className={`text-[10px] ${newIdx < i ? "text-success" : "text-warning"}`}>→ {newIdx + 1}</span>}
+                        </div>
+                      );
+                    })}
+                  </div>
+                </Card>
+              )}
             </div>
           )}
         </>
