@@ -13,6 +13,11 @@ export default function ModelStatusClient() {
   const [selectedModel, setSelectedModel] = useState(null);
   const [search, setSearch] = useState("");
   const [concurrency, setConcurrency] = useState(4);
+  // Auto-refresh interval in seconds. 0 = off. Only the currently visible
+  // slice is pinged (capped) so a 5-minute sweep never fires 648 upstream
+  // requests and never bills a token for models the operator is not looking at.
+  const [refreshIntervalSec, setRefreshIntervalSec] = useState(0);
+  const refreshTimerRef = useRef(null);
   const [expandedProvider, setExpandedProvider] = useState(null);
   const cancelRef = useRef(false);
 
@@ -154,6 +159,27 @@ export default function ModelStatusClient() {
     [running, concurrency, pingOne]
   );
 
+  // Auto-refresh the visible slice. A full 648-model sweep takes minutes and
+  // bills a token per seat; the operator is watching a filter, so only what is
+  // on screen is re-pinged, capped at 20 per tick. Skipped while a manual
+  // batch is already running so the two do not interleave.
+  useEffect(() => {
+    if (!refreshIntervalSec || running) return;
+    const ms = refreshIntervalSec * 1000;
+
+    const tick = async () => {
+      if (cancelRef.current) return;
+      const visible = grouped.slice(0, 3).flatMap((g) => g.models.slice(0, 7));
+      for (const m of visible) await pingOne(m);
+    };
+
+    refreshTimerRef.current = setInterval(tick, ms);
+    return () => {
+      if (refreshTimerRef.current) clearInterval(refreshTimerRef.current);
+      refreshTimerRef.current = null;
+    };
+  }, [refreshIntervalSec, running, grouped, pingOne]);
+
   const stopBatch = useCallback(() => {
     cancelRef.current = true;
     setRunning(false);
@@ -227,9 +253,6 @@ export default function ModelStatusClient() {
             <span className="material-symbols-outlined text-primary text-xl">dashboard</span>
             Upstream Status Matrix
           </h1>
-          <p className="text-xs text-text-muted">
-            Pemeriksaan upstream model bergaya kotak GitHub. Provider aktif &amp; hijau otomatis diurutkan ke paling atas.
-          </p>
         </div>
 
         <div className="flex items-center gap-2">
@@ -343,6 +366,21 @@ export default function ModelStatusClient() {
                 <option value={2}>2x</option>
                 <option value={4}>4x (Safe)</option>
                 <option value={8}>8x (Fast)</option>
+              </select>
+            </div>
+
+            <div className="flex items-center gap-1">
+              <span className="text-text-muted">Auto:</span>
+              <select
+                value={refreshIntervalSec}
+                onChange={(e) => setRefreshIntervalSec(Number(e.target.value))}
+                className="rounded border border-border bg-surface-2 px-2 py-1 text-xs"
+                title="Auto-refresh hanya model yang terlihat (max 21 per tick) — hemat token"
+              >
+                <option value={0}>Off</option>
+                <option value={30}>30s</option>
+                <option value={60}>1m</option>
+                <option value={300}>5m</option>
               </select>
             </div>
           </div>
