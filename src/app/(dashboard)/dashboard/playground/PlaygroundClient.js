@@ -209,6 +209,33 @@ export default function PlaygroundClient() {
           } catch {}
         }
       }
+
+      // Auto-capture the landed exchange into JB Session Memory so the winning
+      // conversation shape survives the tab. Only record answers that actually
+      // contain output — a truncated stream or empty reply is a measurement
+      // artifact, not a template. Failure is silent: capture must never break
+      // the chat the operator was already reading.
+      const trimmed = accContent.trim();
+      if (trimmed && accContent.length > 80) {
+        try {
+          await fetch("/api/developer/jb-sessions", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              model: selectedModel,
+              messages: [...fullPayloadMessages, { role: "assistant", content: accContent }],
+              verdict: "complied",
+              score: Math.min(100, Math.round((accContent.length / 2000) * 100)),
+              identity: systemPrompt,
+              response: accContent,
+              reasoning: accThinking,
+              temperature: Number(temperature),
+              maxTokens: Number(maxTokens),
+              notes: "auto-captured from playground",
+            }),
+          });
+        } catch {}
+      }
     } catch (err) {
       if (err.name !== "AbortError") {
         setMessages((prev) => {
