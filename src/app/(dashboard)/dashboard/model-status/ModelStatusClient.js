@@ -161,15 +161,18 @@ export default function ModelStatusClient() {
 
   // Auto-refresh the visible slice. A full 648-model sweep takes minutes and
   // bills a token per seat; the operator is watching a filter, so only what is
-  // on screen is re-pinged, capped at 20 per tick. Skipped while a manual
-  // batch is already running so the two do not interleave.
+  // on screen is re-pinged, capped at 21 per tick. Skipped while a manual batch
+  // is already running so the two do not interleave. Grouped data is read via a
+  // ref because the effect is declared before `grouped` exists in source order.
+  const groupedRef = useRef([]);
+
   useEffect(() => {
     if (!refreshIntervalSec || running) return;
     const ms = refreshIntervalSec * 1000;
 
     const tick = async () => {
       if (cancelRef.current) return;
-      const visible = grouped.slice(0, 3).flatMap((g) => g.models.slice(0, 7));
+      const visible = (groupedRef.current || []).slice(0, 3).flatMap((g) => g.models.slice(0, 7));
       for (const m of visible) await pingOne(m);
     };
 
@@ -178,7 +181,7 @@ export default function ModelStatusClient() {
       if (refreshTimerRef.current) clearInterval(refreshTimerRef.current);
       refreshTimerRef.current = null;
     };
-  }, [refreshIntervalSec, running, grouped, pingOne]);
+  }, [refreshIntervalSec, running, pingOne]);
 
   const stopBatch = useCallback(() => {
     cancelRef.current = true;
@@ -227,6 +230,13 @@ export default function ModelStatusClient() {
       return b.models.length - a.models.length;
     });
   }, [liveModels, probeResults, search]);
+
+  // Publish the latest grouping to the ref the auto-refresh timer reads. A ref
+  // (not a dependency) because re-creating the interval on every keystroke in
+  // the search box would reset the countdown and starve the sweep.
+  useEffect(() => {
+    groupedRef.current = grouped;
+  }, [grouped]);
 
   // Global aggregate stats
   const globalStats = useMemo(() => {
