@@ -12,11 +12,11 @@ export default function ModelStatusClient() {
   const [running, setRunning] = useState(false);
   const [selectedModel, setSelectedModel] = useState(null);
   const [search, setSearch] = useState("");
-  const [concurrency, setConcurrency] = useState(4);
+  const [concurrency, setConcurrency] = useState(2);
   // Auto-refresh interval in seconds. 0 = off. Only the currently visible
   // slice is pinged (capped) so a 5-minute sweep never fires 648 upstream
   // requests and never bills a token for models the operator is not looking at.
-  const [refreshIntervalSec, setRefreshIntervalSec] = useState(30);
+  const [refreshIntervalSec, setRefreshIntervalSec] = useState(0);
   const refreshTimerRef = useRef(null);
   const [expandedProvider, setExpandedProvider] = useState(null);
   const cancelRef = useRef(false);
