@@ -32,6 +32,7 @@ const navItems = [
   { href: "/dashboard/model-status", label: "Model Status (Live)", icon: "speed" },
   { href: "/dashboard/token-saver", label: "Token Saver", icon: "savings" },
   { href: "/dashboard/model-prompts", label: "Model Prompts", icon: "rule" },
+  { href: "/dashboard/jb-tools", label: "JB Tools", icon: "bolt" },
   // { href: "/dashboard/pxpipe", label: "PXPIPE", icon: "image" },
   { href: "/dashboard/cli-tools", label: "CLI Tools", icon: "terminal" },
   { href: "/dashboard/developer", label: "Developer", icon: "developer_mode" },

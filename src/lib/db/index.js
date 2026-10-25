@@ -76,6 +76,17 @@ export {
   MAX_RETENTION_ROWS,
 } from "./repos/benchmarkRunsRepo.js";
 
+// JB Preset Library + Session Memory
+export {
+  saveJbPreset, getJbPresets, getJbPresetByName, deleteJbPreset,
+  makePresetId,
+} from "./repos/jbPresetsRepo.js";
+export {
+  saveJbSession, getJbSessions, getJbSessionById, deleteJbSession,
+  getJbLeaderboard, pruneJbSessions,
+  makeSessionId, MAX_SESSION_ROWS,
+} from "./repos/jbSessionsRepo.js";
+
 // Export/import full DB
 export async function exportDb() {
   const db = await getAdapter();

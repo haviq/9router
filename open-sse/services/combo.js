@@ -6,6 +6,7 @@ import { checkFallbackError, formatRetryAfter } from "./accountFallback.js";
 import { unavailableResponse } from "../utils/error.js";
 import { getCapabilitiesForModel } from "../providers/capabilities.js";
 import { extractTextContent } from "../translator/formats/gemini.js";
+import { isRefusal } from "../../src/lib/jbAutoRotate.js";
 
 // Hard capabilities = input modalities; missing one drops request data (e.g. image
 // stripped). Must be prioritized. Soft (e.g. search) only degrades a feature.
@@ -355,6 +356,18 @@ export async function handleComboChat({ body, models, handleSingleModel, log, co
               if (isZeroContentResponse(peekBody)) {
                 log.warn("COMBO", `Model ${modelStr} returned HTTP 200 with zero usable content, falling back to next model`);
                 lastError = "Zero usable content";
+                lastStatus = 200;
+                continue;
+              }
+
+              // Refusal-aware rotation. A well-formed refusal is HTTP 200, so
+              // without this the chain stops on the first seat that says no
+              // even though the next seat would answer. Only the peeked
+              // text decides; a transport-shaped answer is untouched.
+              const peekText = extractPanelText(peekBody) || peekBody?.choices?.[0]?.message?.content || "";
+              if (isRefusal(peekText)) {
+                log.info("COMBO", `Model ${modelStr} refused, rotating to next seat`);
+                lastError = "Refusal from model";
                 lastStatus = 200;
                 continue;
               }

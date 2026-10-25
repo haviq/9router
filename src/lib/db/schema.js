@@ -3,7 +3,7 @@
 // pre-change safety backup in migrate.js: when the stored version is lower,
 // one lightweight DB backup is taken before applying schema changes. Forgetting
 // to bump only skips that backup — it does NOT break the additive auto-sync.
-export const SCHEMA_VERSION = 2;
+export const SCHEMA_VERSION = 3;
 
 export const PRAGMA_SQL = `
 PRAGMA journal_mode = WAL;
@@ -176,6 +176,47 @@ export const TABLES = {
       "CREATE INDEX IF NOT EXISTS idx_br_ts ON benchmarkRuns(timestamp DESC)",
       "CREATE INDEX IF NOT EXISTS idx_br_model ON benchmarkRuns(model)",
       "CREATE INDEX IF NOT EXISTS idx_br_payload ON benchmarkRuns(payloadId)",
+    ],
+  },
+  // JB Preset Library — one-click reusable combinations (model + payload +
+  // params) that were verified to land. Without it the winning combination
+  // lives in the operator's head and gets rebuilt by hand every session.
+  jbPresets: {
+    columns: {
+      id: "TEXT PRIMARY KEY",
+      name: "TEXT UNIQUE NOT NULL",
+      model: "TEXT NOT NULL",
+      // Free-form JSON: payloadId, identity, registerLevel, temperature,
+      // maxTokens, topP, notes, verifiedAt, breachRate, probeCount.
+      data: "TEXT NOT NULL",
+      isActive: "INTEGER DEFAULT 1",
+      createdAt: "TEXT NOT NULL",
+      updatedAt: "TEXT NOT NULL",
+    },
+    indexes: [
+      "CREATE INDEX IF NOT EXISTS idx_jbp_name ON jbPresets(name)",
+      "CREATE INDEX IF NOT EXISTS idx_jbp_model ON jbPresets(model)",
+      "CREATE INDEX IF NOT EXISTS idx_jbp_active ON jbPresets(isActive)",
+    ],
+  },
+  // JB Session Memory — every probe/chat that landed, captured as a reusable
+  // template. benchmarkRuns answers "did payload X work"; this answers "what
+  // did the winning conversation actually look like" so it can be replayed.
+  jbSessions: {
+    columns: {
+      id: "TEXT PRIMARY KEY",
+      timestamp: "TEXT NOT NULL",
+      model: "TEXT",
+      presetId: "TEXT",
+      verdict: "TEXT",
+      score: "INTEGER DEFAULT 0",
+      data: "TEXT NOT NULL",
+    },
+    indexes: [
+      "CREATE INDEX IF NOT EXISTS idx_jbs_ts ON jbSessions(timestamp DESC)",
+      "CREATE INDEX IF NOT EXISTS idx_jbs_model ON jbSessions(model)",
+      "CREATE INDEX IF NOT EXISTS idx_jbs_verdict ON jbSessions(verdict)",
+      "CREATE INDEX IF NOT EXISTS idx_jbs_preset ON jbSessions(presetId)",
     ],
   },
 };
