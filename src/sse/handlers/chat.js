@@ -321,6 +321,11 @@ async function handleSingleModelChat(
       cavemanLevel: chatSettings.cavemanLevel || "full",
       ponytailEnabled: !!chatSettings.ponytailEnabled,
       ponytailLevel: chatSettings.ponytailLevel || "full",
+      // Per-model budget guard + exact-match cache. Default ON for both — an
+      // older settings row with neither key reads as enabled, which matches the
+      // engine default and means an upgrade alone lights the feature up.
+      tokenBudgetEnabled: chatSettings.tokenBudgetEnabled !== false,
+      responseCacheEnabled: chatSettings.responseCacheEnabled !== false,
       // Unified global injection: one master toggle drives both the
       // register prompt (Plinian-style) and the G0DM0D3 payload.
       // Backward-compat: if the new key is unset but the old

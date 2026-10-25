@@ -45,6 +45,14 @@ export default function TokenSaverClient() {
   const [cavemanLevel, setCavemanLevel] = useState("full");
   const [ponytailEnabled, setPonytailEnabled] = useState(false);
   const [ponytailLevel, setPonytailLevel] = useState("full");
+  // Per-model budget guard: engine fills in a family default (reasoning 8000,
+  // vision 4096, standard 2048) when the request omits max_tokens. Caller-set
+  // values always win, so this only changes requests that sent nothing.
+  const [tokenBudgetEnabled, setTokenBudgetEnabled] = useState(true);
+  // Exact-match response cache: same body within TTL is served from memory
+  // instead of a second upstream round trip. Per-request bypass via header
+  // x-9router-nocache: 1.
+  const [responseCacheEnabled, setResponseCacheEnabled] = useState(true);
   const [pxpipeEnabled, setPxpipeEnabled] = useState(false);
   const [pxpipeMinChars, setPxpipeMinChars] = useState(25000);
   const [pxpipeStatus, setPxpipeStatus] = useState({
@@ -365,6 +373,16 @@ export default function TokenSaverClient() {
     patchSetting({ ponytailLevel: level });
   };
 
+  const handleTokenBudgetEnabled = (value) => {
+    setTokenBudgetEnabled(value);
+    patchSetting({ tokenBudgetEnabled: value });
+  };
+
+  const handleResponseCacheEnabled = (value) => {
+    setResponseCacheEnabled(value);
+    patchSetting({ responseCacheEnabled: value });
+  };
+
   const refreshPxpipeStatus = useCallback(async () => {
     setPxpipeStatus((s) => ({ ...s, loading: true }));
     try {
@@ -441,6 +459,11 @@ export default function TokenSaverClient() {
           setCavemanLevel(data.cavemanLevel || "full");
           setPonytailEnabled(!!data.ponytailEnabled);
           setPonytailLevel(data.ponytailLevel || "full");
+          // New guards default ON — the engine fills in a family budget and
+          // caches exact repeats unless the operator explicitly turned either
+          // off, so an older settings row without the keys reads as "enabled".
+          setTokenBudgetEnabled(data.tokenBudgetEnabled !== false);
+          setResponseCacheEnabled(data.responseCacheEnabled !== false);
           setPxpipeEnabled(!!data.pxpipeEnabled);
           if (typeof data.pxpipeMinChars === "number") setPxpipeMinChars(data.pxpipeMinChars);
           refreshHeadroomStatus();
@@ -752,6 +775,45 @@ export default function TokenSaverClient() {
             />
           </div>
         </div>
+        {/* Per-Model Token Budget — engine-layer guard, no external service. */}
+        <div className="flex items-center justify-between pt-4 mt-4 border-t border-border gap-4 flex-wrap">
+          <div className="min-w-0 flex-1">
+            <p className="font-medium">
+              Per-Model Token Budget{" "}
+              <span className="text-xs font-normal text-text-muted">(Auto)</span>
+            </p>
+            <p className="text-sm text-text-muted">
+              Fill in max_tokens per model family when the request omits it:
+              reasoning 8000 · vision 4096 · standard 2048. Caller-set values
+              always win; retries once with a larger budget on finish_reason
+              &quot;length&quot;.
+            </p>
+          </div>
+          <Toggle
+            checked={tokenBudgetEnabled}
+            onChange={() => handleTokenBudgetEnabled(!tokenBudgetEnabled)}
+          />
+        </div>
+
+        {/* Response Cache — exact-match only, per-request bypass header. */}
+        <div className="flex items-center justify-between pt-4 mt-4 border-t border-border gap-4 flex-wrap">
+          <div className="min-w-0 flex-1">
+            <p className="font-medium">
+              Response Cache{" "}
+              <span className="text-xs font-normal text-text-muted">(Exact-match)</span>
+            </p>
+            <p className="text-sm text-text-muted">
+              Serve identical requests from memory for 5 minutes instead of a
+              second upstream round trip. Per-request bypass with header
+              x-9router-nocache: 1.
+            </p>
+          </div>
+          <Toggle
+            checked={responseCacheEnabled}
+            onChange={() => handleResponseCacheEnabled(!responseCacheEnabled)}
+          />
+        </div>
+
         {/* PXPIPE hidden from UI — experimental, not exposed to users yet */}
         {false && (
         <div className="flex items-center justify-between pt-4 mt-4 border-t border-border gap-4 flex-wrap">
