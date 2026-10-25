@@ -5,7 +5,8 @@ import { Card, Button } from "@/shared/components";
 import useLiveModels from "@/shared/hooks/useLiveModels";
 
 export default function PlaygroundClient() {
-  const { models: liveModels } = useLiveModels();
+  const { models: hookModels } = useLiveModels();
+  const [directModels, setDirectModels] = useState([]);
   
   // Parameters state
   const [apiKey, setApiKey] = useState("");
@@ -29,7 +30,23 @@ export default function PlaygroundClient() {
   const chatEndRef = useRef(null);
   const dropdownRef = useRef(null);
 
-  // Auto-fill active API key from system if available
+  // Load 600+ active models directly from probe-matrix endpoint
+  useEffect(() => {
+    (async () => {
+      try {
+        const res = await fetch("/api/models/probe-matrix", { cache: "no-store" });
+        if (res.ok) {
+          const data = await res.json();
+          if (Array.isArray(data.activeModels) && data.activeModels.length > 0) {
+            setDirectModels(data.activeModels);
+            return;
+          }
+        }
+      } catch {}
+    })();
+  }, []);
+
+  // Auto-fill active API key from system if available & fetch models with that key
   useEffect(() => {
     (async () => {
       try {
@@ -37,11 +54,29 @@ export default function PlaygroundClient() {
         if (res.ok) {
           const data = await res.json();
           const active = data?.keys?.find((k) => k.isActive)?.key || data?.keys?.[0]?.key;
-          if (active) setApiKey(active);
+          if (active) {
+            setApiKey(active);
+            // Fetch /v1/models using this active key directly
+            try {
+              const v1Res = await fetch("/v1/models", {
+                headers: { Authorization: `Bearer ${active}` },
+                cache: "no-store",
+              });
+              if (v1Res.ok) {
+                const v1Json = await v1Res.json();
+                if (Array.isArray(v1Json?.data) && v1Json.data.length > 0) {
+                  setDirectModels(v1Json.data);
+                }
+              }
+            } catch {}
+          }
         }
       } catch {}
     })();
   }, []);
+
+  // Combined live models list
+  const liveModels = directModels.length > 0 ? directModels : hookModels;
 
   // Set default model once models load
   useEffect(() => {
