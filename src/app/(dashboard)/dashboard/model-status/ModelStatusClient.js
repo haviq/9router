@@ -16,7 +16,7 @@ export default function ModelStatusClient() {
   // Auto-refresh interval in seconds. 0 = off. Only the currently visible
   // slice is pinged (capped) so a 5-minute sweep never fires 648 upstream
   // requests and never bills a token for models the operator is not looking at.
-  const [refreshIntervalSec, setRefreshIntervalSec] = useState(0);
+  const [refreshIntervalSec, setRefreshIntervalSec] = useState(30);
   const refreshTimerRef = useRef(null);
   const [expandedProvider, setExpandedProvider] = useState(null);
   const cancelRef = useRef(false);
@@ -360,6 +360,9 @@ export default function ModelStatusClient() {
               <span className="flex items-center gap-1">
                 <span className="h-2.5 w-2.5 rounded-sm bg-warning animate-pulse" /> Checking
               </span>
+              <span className="flex items-center gap-1" title="Probe missed the 30s window — slow or busy, not dead">
+                <span className="h-2.5 w-2.5 rounded-sm bg-warning/70 border border-warning" /> Timeout
+              </span>
               <span className="flex items-center gap-1">
                 <span className="h-2.5 w-2.5 rounded-sm bg-surface-2 border border-border" /> Untested
               </span>
@@ -561,18 +564,24 @@ export default function ModelStatusClient() {
                       const isChecking = res?.checking;
                       const isOk = res && res.ok;
                       const isErr = res && !res.ok && !isChecking;
+                      // Timeout is a distinct outcome from a real error. A slow
+                      // reasoning seat that missed the 30s window is not the
+                      // same as a 404 or a revoked key, and painting both red
+                      // makes the whole grid look broken during a busy sweep.
+                      const isTimeout = isErr && typeof res.error === "string" && /timeout|aborted/i.test(res.error);
                       const isSelected = selectedModel?.id === m.id;
 
                       let bgClass = "bg-surface border-border hover:border-text-muted";
                       if (isChecking) bgClass = "bg-warning animate-pulse border-warning";
                       else if (isOk) bgClass = "bg-success border-success/70 hover:brightness-110 shadow-sm shadow-success/20";
+                      else if (isTimeout) bgClass = "bg-warning/70 border-warning hover:brightness-110";
                       else if (isErr) bgClass = "bg-error border-error/70 hover:brightness-110";
 
                       return (
                         <button
                           key={m.id}
                           onClick={() => setSelectedModel(res || { id: m.id })}
-                          title={`${m.id}\nStatus: ${isChecking ? "checking..." : isOk ? "200 OK (" + res.latencyMs + "ms)" : isErr ? "ERROR: " + res.error : "untested"}`}
+                          title={`${m.id}\nStatus: ${isChecking ? "checking..." : isOk ? "200 OK (" + res.latencyMs + "ms)" : isTimeout ? "TIMEOUT — slow or busy (retry)" : isErr ? "ERROR: " + res.error : "untested"}`}
                           className={`h-4 w-4 rounded-sm border transition-all cursor-pointer ${bgClass} ${
                             isSelected ? "ring-2 ring-primary ring-offset-1 ring-offset-surface scale-125 z-10" : ""
                           }`}

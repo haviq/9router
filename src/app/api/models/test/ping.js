@@ -203,7 +203,11 @@ export async function pingModelByKind(model, kind, baseUrl = `http://127.0.0.1:$
       stream: false,
       messages: [{ role: "user", content: "hi" }],
     }),
-    signal: AbortSignal.timeout(15000),
+    // 30s, not 15s. Reasoning models spend 5–25s on chain-of-thought before the
+    // first visible token; at 15s a healthy kl/ or rv/ seat reports "timeout"
+    // and reads as dead. The probe is a connectivity check, not a speed test —
+    // waiting longer here is cheaper than a false dead-seat alarm.
+    signal: AbortSignal.timeout(30000),
   });
   const latencyMs = Date.now() - start;
 
