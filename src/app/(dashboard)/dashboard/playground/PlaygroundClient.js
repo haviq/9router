@@ -441,18 +441,18 @@ export default function PlaygroundClient() {
             </button>
 
             {showModelDropdown && (
-              <div className="absolute left-0 top-full mt-1.5 w-80 max-h-96 z-50 rounded-lg border border-border bg-surface p-2 shadow-xl flex flex-col gap-2">
+              <div className="absolute left-0 top-full mt-1.5 w-84 max-h-96 z-50 rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-2 shadow-2xl flex flex-col gap-2">
                 <input
                   type="text"
                   value={modelSearch}
                   onChange={(e) => setModelSearch(e.target.value)}
                   placeholder="Search 600+ models..."
                   autoFocus
-                  className="w-full rounded border border-border bg-surface-2 px-2.5 py-1 text-xs font-mono text-text-main outline-none focus:border-primary"
+                  className="w-full rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 px-2.5 py-1.5 text-xs font-mono text-slate-900 dark:text-slate-100 outline-none focus:border-primary focus:ring-1 focus:ring-primary"
                 />
                 <div className="overflow-y-auto max-h-72 flex flex-col gap-0.5">
                   {filteredDropdownModels.length === 0 ? (
-                    <div className="p-3 text-center text-xs text-text-muted">No models found</div>
+                    <div className="p-3 text-center text-xs text-slate-400">No models found</div>
                   ) : (
                     filteredDropdownModels.map((m) => (
                       <button
@@ -463,10 +463,10 @@ export default function PlaygroundClient() {
                           setShowModelDropdown(false);
                           setModelSearch("");
                         }}
-                        className={`text-left px-2 py-1.5 rounded text-xs font-mono truncate transition-colors ${
+                        className={`text-left px-2.5 py-1.5 rounded-lg text-xs font-mono truncate transition-colors ${
                           selectedModel === m.id
-                            ? "bg-primary/20 text-primary font-semibold"
-                            : "text-text-main hover:bg-surface-2"
+                            ? "bg-primary/20 text-primary font-bold"
+                            : "text-slate-900 dark:text-slate-100 hover:bg-slate-100 dark:hover:bg-slate-800"
                         }`}
                       >
                         {m.id}
