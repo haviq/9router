@@ -7,6 +7,7 @@ import { unavailableResponse } from "../utils/error.js";
 import { getCapabilitiesForModel } from "../providers/capabilities.js";
 import { extractTextContent } from "../translator/formats/gemini.js";
 import { isRefusal } from "../../src/lib/jbAutoRotate.js";
+import { captureLandedSession, peekJson } from "../../src/lib/jbSessionCapture.js";
 
 // Hard capabilities = input modalities; missing one drops request data (e.g. image
 // stripped). Must be prioritized. Soft (e.g. search) only degrades a feature.
@@ -378,6 +379,23 @@ export async function handleComboChat({ body, models, handleSingleModel, log, co
         }
 
         log.info("COMBO", `Model ${modelStr} succeeded`);
+
+        // Server-side capture: record the landed exchange so the corpus grows
+        // from every path — API clients, Hermes, scripts — not only the
+        // browser Playground. Non-stream JSON only; a streamed body would have
+        // to be fully drained first and the caller already has the reader.
+        try {
+          const captureBody = await peekJson(result);
+          if (captureBody) {
+            await captureLandedSession({
+              responseBody: captureBody,
+              model: modelStr,
+              messages: Array.isArray(body?.messages) ? body.messages : [],
+              notes: `auto-captured via combo ${comboName}`,
+            });
+          }
+        } catch {}
+
         return result;
       }
 
