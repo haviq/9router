@@ -4,6 +4,7 @@ import { formatRetryAfter, checkFallbackError, isModelLockActive, buildModelLock
 import { MAX_RATE_LIMIT_COOLDOWN_MS } from "open-sse/config/errorConfig.js";
 import { resolveProviderId, FREE_PROVIDERS } from "@/shared/constants/providers.js";
 import { getAntigravityQuotaCache, getAntigravityModelQuota } from "./antigravityQuota.js";
+import { isKeyCooling, markKeyCooldown } from "@/lib/keyPool.js";
 import * as log from "../utils/logger.js";
 
 // Mutex to prevent race conditions during account selection
@@ -84,8 +85,12 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
     const antigravityQuotaCache = isAntigravity && model ? getAntigravityQuotaCache() : null;
 
     // Filter out model-locked, excluded, and Antigravity quota-exhausted connections.
+    // Also skip connections whose API key is currently in cooldown after a
+    // key-level failure (401/402/403/429) so a benched key does not keep
+    // answering earlier than the provider asked.
     const availableConnections = connections.filter(c => {
       if (excludeSet.has(c.id)) return false;
+      if (isKeyCooling(c.id)) return false;
       if (isModelLockActive(c, model)) return false;
       const enabled = c.providerSpecificData?.enabledModels;
       if (providerId === "codex" && Array.isArray(enabled) && enabled.length && requestedModel && !enabled.includes(requestedModel)) return false;
@@ -270,6 +275,12 @@ export async function markAccountUnavailable(connectionId, status, errorText, pr
     ({ shouldFallback, cooldownMs, newBackoffLevel } = checkFallbackError(status, errorText, backoffLevel, resolveProviderId(provider)));
   }
   if (!shouldFallback) return { shouldFallback: false, cooldownMs: 0 };
+
+  // Layer the fast in-memory key cooldown on top of the DB model-lock. The DB
+  // lock survives restart and covers per-model bans; the in-memory bench is what
+  // getProviderCredentials consults when it spreads a request across a pool, and
+  // it is cleared on success, so a recovered key is not held out by a stale row.
+  markKeyCooldown(connectionId, status, cooldownMs);
 
   const reason = typeof errorText === "string" ? errorText.slice(0, 100) : "Provider error";
   // 403 ENTITLEMENT/subscription errors are account-level, not model-level:
