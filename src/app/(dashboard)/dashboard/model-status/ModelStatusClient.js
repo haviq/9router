@@ -217,11 +217,22 @@ export default function ModelStatusClient() {
       else groups[prov].error++;
     });
 
-    // Di dalam tiap grup, urutkan kotak model: HIJAU (OK) di depan!
+    // Inside each group, order by outcome then latency. Fastest-first needs
+    // models sorted by measured latency, not just providers — otherwise a
+    // provider card shows fast models last in the wrong order.
     Object.values(groups).forEach((g) => {
       g.models.sort((a, b) => {
         const resA = probeResults[a.id];
         const resB = probeResults[b.id];
+        if (sortMode === "fastest") {
+          const aOk = resA?.ok ? 1 : 0;
+          const bOk = resB?.ok ? 1 : 0;
+          if (aOk !== bOk) return bOk - aOk;
+          const la = resA?.ok && Number(resA.latencyMs) > 0 ? Number(resA.latencyMs) : Number.MAX_SAFE_INTEGER;
+          const lb = resB?.ok && Number(resB.latencyMs) > 0 ? Number(resB.latencyMs) : Number.MAX_SAFE_INTEGER;
+          if (la !== lb) return la - lb;
+          return a.id.localeCompare(b.id);
+        }
         const scoreA = resA?.ok ? 3 : resA?.checking ? 2 : !resA ? 1 : 0;
         const scoreB = resB?.ok ? 3 : resB?.checking ? 2 : !resB ? 1 : 0;
         return scoreB - scoreA;
