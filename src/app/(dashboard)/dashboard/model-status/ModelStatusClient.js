@@ -13,6 +13,11 @@ export default function ModelStatusClient() {
   const [selectedModel, setSelectedModel] = useState(null);
   const [search, setSearch] = useState("");
   const [concurrency, setConcurrency] = useState(2);
+  // Sort mode for providers: green-first (default) or fastest-first (slowest
+  // measured latency wins the bottom). Latency sort only ranks providers with
+  // at least one measured probe; unmeasured ones stay at the end so the top of
+  // the list is never padded with placeholders.
+  const [sortMode, setSortMode] = useState("green");
   // Auto-refresh interval in seconds. 0 = off. Only the currently visible
   // slice is pinged (capped) so a 5-minute sweep never fires 648 upstream
   // requests and never bills a token for models the operator is not looking at.
@@ -223,13 +228,35 @@ export default function ModelStatusClient() {
       });
     });
 
-    // Sort grup provider: YANG ADA HIJAUNYA PALING BANYAK DI PALING ATAS!
+    // Composite ordering. `green`: providers with the most OK seats first.
+    // `fastest`: providers with the lowest measured median latency first; those
+    // with no measurement sink to the bottom instead of sorting as 0ms (which
+    // would rank untested providers above verified-millisecond ones).
+    const providerLatency = (g) => {
+      const samples = g.models
+        .map((m) => probeResults[m.id])
+        .filter((r) => r && r.ok && Number(r.latencyMs) > 0)
+        .map((r) => Number(r.latencyMs));
+      if (!samples.length) return null;
+      samples.sort((a, b) => a - b);
+      return samples[Math.floor(samples.length / 2)];
+    };
+
     return Object.values(groups).sort((a, b) => {
+      if (sortMode === "fastest") {
+        const la = providerLatency(a);
+        const lb = providerLatency(b);
+        if (la === null && lb === null) return b.ok - a.ok;
+        if (la === null) return 1;
+        if (lb === null) return -1;
+        if (la !== lb) return la - lb;
+        return b.ok - a.ok;
+      }
       if (b.ok !== a.ok) return b.ok - a.ok; // Hijau terbanyak di atas
       if (a.error !== b.error) return a.error - b.error; // Error lebih sedikit di atas
       return b.models.length - a.models.length;
     });
-  }, [liveModels, probeResults, search]);
+  }, [liveModels, probeResults, search, sortMode]);
 
   // Publish the latest grouping to the ref the auto-refresh timer reads. A ref
   // (not a dependency) because re-creating the interval on every keystroke in
@@ -379,6 +406,19 @@ export default function ModelStatusClient() {
                 <option value={2}>2x</option>
                 <option value={4}>4x (Safe)</option>
                 <option value={8}>8x (Fast)</option>
+              </select>
+            </div>
+
+            <div className="flex items-center gap-1">
+              <span className="text-text-muted">Sort:</span>
+              <select
+                value={sortMode}
+                onChange={(e) => setSortMode(e.target.value)}
+                className="rounded border border-border bg-surface-2 px-2 py-1 text-xs"
+                title="green = provider dengan seat OK terbanyak. fastest = provider dengan latency median terendah (yang belum diukur di bawah)."
+              >
+                <option value="green">Green first</option>
+                <option value="fastest">Fastest first</option>
               </select>
             </div>
 
