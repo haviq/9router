@@ -29,6 +29,7 @@ const navItems = [
   { href: "/dashboard/playground", label: "Playground", icon: "smart_toy" },
   { href: "/dashboard/health", label: "Provider Health", icon: "monitor_heart" },
   { href: "/dashboard/quota", label: "Quota Tracker", icon: "data_usage" },
+  { href: "/dashboard/quota-provider", label: "Provider Load", icon: "bar_chart" },
   { href: "/dashboard/model-status", label: "Model Status (Live)", icon: "speed" },
   { href: "/dashboard/token-saver", label: "Token Saver", icon: "savings" },
   { href: "/dashboard/model-prompts", label: "Model Prompts", icon: "rule" },
