@@ -26,6 +26,11 @@ export const DEFAULT_GUARD = {
   minSpacingMs: 1000,
   // A call older than this does not count against the concurrency window.
   requestWindowMs: 30_000,
+  // Hard daily ceiling per account. Above this the account is skipped for the
+  // rest of the UTC day when another account can take the call. Set in the
+  // hundreds for personal accounts; the Google abuse signal reads volume across
+  // the account, not per-minute burst. 0 disables the ceiling.
+  maxRequestsPerDay: 300,
 };
 
 // Read a quota snapshot for one account across whichever model asked for it.
@@ -98,6 +103,23 @@ export function shouldSkipAccount(connection, snapshot, poolSize, options = {}) 
 if (!globalThis._9rAccountGuard) globalThis._9rAccountGuard = new Map();
 const accountLog = globalThis._9rAccountGuard;
 
+// Per-day count per account. Reset by comparing the stored UTC day on read so
+// no timer is needed and a restart mid-day keeps the count (this map is
+// persisted on globalThis like the log above, but rebuilt on restart).
+if (!globalThis._9rAccountDaily) globalThis._9rAccountDaily = new Map();
+const accountDaily = globalThis._9rAccountDaily;
+
+function todayKey(now = Date.now()) {
+  return new Date(now).toISOString().slice(0, 10);
+}
+
+function dailyCount(accountId, now = Date.now()) {
+  const entry = accountDaily.get(accountId);
+  if (!entry) return 0;
+  if (entry.day !== todayKey(now)) return 0;
+  return entry.count || 0;
+}
+
 function logFor(accountId) {
   if (!accountLog.has(accountId)) accountLog.set(accountId, []);
   return accountLog.get(accountId);
@@ -116,6 +138,30 @@ function recentRequestCount(accountId, now, windowMs) {
 export function markAccountRequest(accountId, now = Date.now()) {
   if (!accountId) return;
   logFor(accountId).push(now);
+  // Also bump the per-day counter; read-time reset handles UTC rollover.
+  const day = todayKey(now);
+  const entry = accountDaily.get(accountId);
+  if (!entry || entry.day !== day) {
+    accountDaily.set(accountId, { day, count: 1 });
+  } else {
+    entry.count += 1;
+  }
+}
+
+// True when this account has already hit its daily ceiling and there is another
+// account to take the call. The ceiling is the account-safety lever that the
+// percentage guard does not cover: an account can sit at 20% quota by noon and
+// still look like a bot if every request of the day flowed through it.
+export function shouldSkipByDailyCap(accountId, poolSize, options = {}) {
+  const g = { ...DEFAULT_GUARD, ...options };
+  if (!g.enabled) return false;
+  if (!g.maxRequestsPerDay || g.maxRequestsPerDay <= 0) return false;
+  if (poolSize <= 1) return false;
+  return dailyCount(accountId) >= g.maxRequestsPerDay;
+}
+
+export function dailyRequestCount(accountId, now = Date.now()) {
+  return dailyCount(accountId, now);
 }
 
 // How long to wait before the next request to this account.

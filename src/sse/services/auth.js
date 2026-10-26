@@ -11,6 +11,7 @@ import {
   markAccountRequest,
   shouldAlertAccount,
   accountUsedPercent,
+  shouldSkipByDailyCap,
   DEFAULT_GUARD,
 } from "@/lib/antigravityGuard.js";
 import * as log from "../utils/logger.js";
@@ -139,6 +140,14 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
           return false;
         }
       }
+      // Daily ceiling: the percentage guard cannot catch an account that is
+      // only 20% full by noon but has already handled the whole day's traffic.
+      // Volume is what an abuse detector reads, so cap it per account per day.
+      if (isAntigravity && shouldSkipByDailyCap(c.id, antigravityPoolSize)) {
+        const account = c.id?.slice(0, 8) || "unknown";
+        log.info("AG_GUARD", `${account} | DAILY_CAP — steering to another account`);
+        return false;
+      }
       return true;
     });
 
@@ -240,6 +249,12 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
     }
 
     const resolvedProxy = await resolveConnectionProxyConfig(connection.providerSpecificData || {});
+
+    // Record the pick so the per-account window and the daily ceiling both see
+    // this call. Marked before return (not after dispatch) on purpose: the
+    // safety signal must count a call that was about to go out, not only the
+    // ones that completed.
+    try { markAccountRequest(connection.id); } catch { /* guard must not break the pick */ }
 
     return {
       authType: connection.authType,
