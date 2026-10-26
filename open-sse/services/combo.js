@@ -8,6 +8,14 @@ import { getCapabilitiesForModel } from "../providers/capabilities.js";
 import { extractTextContent } from "../translator/formats/gemini.js";
 import { isRefusal } from "../../src/lib/jbAutoRotate.js";
 import { captureLandedSession, peekJson } from "../../src/lib/jbSessionCapture.js";
+import {
+  cacheKey,
+  get as cacheGet,
+  set as cacheSet,
+  shouldCache,
+  ttlFor,
+  wantsNoCache,
+} from "../../src/lib/responseCache.js";
 
 // Hard capabilities = input modalities; missing one drops request data (e.g. image
 // stripped). Must be prioritized. Soft (e.g. search) only degrades a feature.
@@ -339,6 +347,33 @@ export async function handleComboChat({ body, models, handleSingleModel, log, co
   let earliestRetryAfter = null;
   let lastStatus = null;
 
+  // Response cache lookup. Repeat probes, benchmark sweeps, and combo-verification
+  // runs send identical bodies within minutes of each other. A hit here removes
+  // the upstream round trip entirely. Streamed requests are skipped: a cached
+  // SSE body cannot be replayed to a caller that expects to read a live stream.
+  const isStream = body?.stream === true;
+  const skipCache = wantsNoCache(body?.headers) || isStream;
+  const cacheK = skipCache
+    ? null
+    : cacheKey({
+        model: `combo:${comboName || "combo"}`,
+        messages: body?.messages,
+        temperature: body?.temperature,
+        topP: body?.top_p,
+        maxTokens: body?.max_tokens,
+        body,
+      });
+  if (cacheK) {
+    const cached = cacheGet(cacheK);
+    if (cached) {
+      log.info("COMBO", `response cache hit for ${comboName || "combo"}`);
+      return new Response(cached, {
+        status: 200,
+        headers: { "content-type": "application/json", "x-9router-cache": "hit" },
+      });
+    }
+  }
+
   for (let i = 0; i < rotatedModels.length; i++) {
     const modelStr = rotatedModels[i];
     log.info("COMBO", `Trying model ${i + 1}/${rotatedModels.length}: ${modelStr}`);
@@ -393,6 +428,23 @@ export async function handleComboChat({ body, models, handleSingleModel, log, co
               messages: Array.isArray(body?.messages) ? body.messages : [],
               notes: `auto-captured via combo ${comboName}`,
             });
+
+            // Cache storage: only cacheable answers land. A refusal or an
+            // under-threshold one-liner would be served again inside the TTL,
+            // which is how a cache turns a transient refusal into a persistent
+            // one. The single-content gate here mirrors captureLandedSession so
+            // the two are never inconsistent about what "landed" means.
+            if (cacheK && !skipCache) {
+              try {
+                const landed = extractPanelText(captureBody) || captureBody?.choices?.[0]?.message?.content || "";
+                const verdict = shouldCache(captureBody, landed);
+                if (verdict.cache) {
+                  cacheSet(cacheK, JSON.stringify(captureBody), { ttlMs: ttlFor("chat") });
+                }
+              } catch {
+                // Cache writes must never break a request.
+              }
+            }
           }
         } catch {}
 

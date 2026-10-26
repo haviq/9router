@@ -6,6 +6,8 @@ import {
   clear,
   stats,
   wantsNoCache,
+  shouldCache,
+  ttlFor,
   CACHE_LIMITS,
 } from "@/lib/responseCache.js";
 
@@ -123,7 +125,68 @@ describe("responseCache — stats", () => {
   });
 
   it("exposes cache limits", () => {
-    expect(CACHE_LIMITS.DEFAULT_TTL_MS).toBe(5 * 60 * 1000);
+    expect(CACHE_LIMITS.DEFAULT_TTL_MS).toBe(15 * 60 * 1000);
     expect(CACHE_LIMITS.MAX_ENTRIES).toBeGreaterThan(0);
+  });
+});
+
+describe("responseCache — ttl per category", () => {
+  it("benchmark keeps a longer window than chat", () => {
+    expect(ttlFor("benchmark")).toBeGreaterThan(ttlFor("chat"));
+  });
+
+  it("probe keeps a shorter window than chat", () => {
+    expect(ttlFor("probe")).toBeLessThan(ttlFor("chat"));
+  });
+
+  it("unknown kind falls back to the chat default", () => {
+    expect(ttlFor("who-knows")).toBe(ttlFor("chat"));
+  });
+});
+
+describe("responseCache — shouldCache", () => {
+  const longAnswer = "x".repeat(120);
+
+  it("accepts a substantive answer", () => {
+    expect(shouldCache({}, longAnswer).cache).toBe(true);
+  });
+
+  it("rejects a one-liner below the threshold", () => {
+    expect(shouldCache({}, "ok").reason).toBe("too-short");
+  });
+
+  it("rejects a refusal", () => {
+    const refusal = "I'm sorry, but I can't help with that request. It goes against my guidelines.";
+    expect(shouldCache({}, refusal).reason).toBe("refusal");
+  });
+
+  it("rejects a budget-exhausted empty answer", () => {
+    const body = { choices: [{ finish_reason: "length" }] };
+    expect(shouldCache(body, "").reason).toBe("budget-exhausted");
+  });
+
+  it("still caches a truncated but non-empty answer", () => {
+    const body = { choices: [{ finish_reason: "length" }] };
+    expect(shouldCache(body, longAnswer).cache).toBe(true);
+  });
+});
+
+describe("responseCache — message normalization", () => {
+  it("ignores surrounding whitespace in content", () => {
+    const a = cacheKey({ model: "m", messages: [{ role: "user", content: "hello" }] });
+    const b = cacheKey({ model: "m", messages: [{ role: "user", content: "  hello\n" }] });
+    expect(a).toBe(b);
+  });
+
+  it("ignores per-request metadata fields", () => {
+    const a = cacheKey({ model: "m", messages: [{ role: "user", content: "hi", requestId: "a" }] });
+    const b = cacheKey({ model: "m", messages: [{ role: "user", content: "hi", requestId: "b" }] });
+    expect(a).toBe(b);
+  });
+
+  it("still distinguishes different content", () => {
+    const a = cacheKey({ model: "m", messages: [{ role: "user", content: "hello" }] });
+    const b = cacheKey({ model: "m", messages: [{ role: "user", content: "goodbye" }] });
+    expect(a).not.toBe(b);
   });
 });

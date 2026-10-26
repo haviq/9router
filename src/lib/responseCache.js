@@ -2,34 +2,46 @@
 //
 // Benchmark loops, combo verification sweeps, and repeated probe runs send the
 // same request body within minutes of each other. Every one hits the upstream
-// provider and pays for a full round trip that was already answered. A 5-minute
-// exact-match cache removes that duplication without touching the semantics of
-// a real, non-repeated request.
+// provider and pays for a full round trip that was already answered. A
+// time-bounded exact-match cache removes that duplication without touching the
+// semantics of a real, non-repeated request.
 //
-// Deliberately in-memory. Persisting responses to SQLite would survive restart
-// but resurrect stale answers after a deployment — the one moment the operator
+// In-memory by design. Persisting responses to SQLite would survive restart but
+// resurrect stale answers after a deployment — the one moment the operator
 // least wants the old model behaviour back. A restart clearing the cache is a
 // feature.
 //
-// Deliberately exact-match. Semantic caching (embedding similarity) is a
-// different feature with a different failure mode: it can serve a wrong answer
-// because the request "looked" similar. That is not acceptable as a silent
-// default.
+// Exact-match by design. Semantic caching (embedding similarity) is a different
+// feature with a different failure mode: it can serve a wrong answer because
+// the request "looked" similar. That is not acceptable as a silent default.
 
-const DEFAULT_TTL_MS = 5 * 60 * 1000;
+import { isRefusal } from "./jbAutoRotate.js";
+
+// TTL per request category. A chat answer is worth caching longer than a probe
+// (which is a connectivity check the operator probably wants to re-measure),
+// and a benchmark result is deterministic enough to keep indefinitely within
+// the process lifetime.
+const TTL_BY_KIND = {
+  chat: 15 * 60 * 1000,
+  probe: 5 * 60 * 1000,
+  benchmark: 60 * 60 * 1000,
+};
+
+const DEFAULT_TTL_MS = TTL_BY_KIND.chat;
 const MAX_ENTRIES = 500;
 const MAX_KEY_BYTES = 200_000;
 
-// The cache is per-process. In dev with hot reload the module state resets, so
-// bind to globalThis like the DB driver does to avoid unbounded growth when the
-// app is restarted many times without a full process restart.
+// Below this size, the response is a one-liner that will not save meaningful
+// upstream work — caching it turns the map into noise that evicts useful rows.
+const MIN_CACHEABLE_CHARS = 80;
+
 if (!globalThis._9rResponseCache) {
-  globalThis._9rResponseCache = { entries: new Map(), hits: 0, misses: 0, evictions: 0 };
+  globalThis._9rResponseCache = { entries: new Map(), hits: 0, misses: 0, evictions: 0, skips: 0 };
 }
 const state = globalThis._9rResponseCache;
 
 // Stable key derivation. Object key order must not affect the hash, or the same
-// request with keys re-ordered would count as a cache miss and the trie would
+// request with keys re-ordered would count as a cache miss and the map would
 // fill with duplicates.
 function stableStringify(value) {
   if (value === null || typeof value !== "object") return JSON.stringify(value);
@@ -38,18 +50,28 @@ function stableStringify(value) {
   return `{${keys.map((k) => `${JSON.stringify(k)}:${stableStringify(value[k])}`).join(",")}}`;
 }
 
-// Hash the fields that actually change the answer.
+// Normalize a message list before hashing.
 //
-// Ignored on purpose:
-//   - stream: the cached body is JSON; a streaming request gets a non-stream
-//     cached response, which a well-behaved client can still read as one event
-//   - user / metadata / headers: routing identity, not content
-//   - tools: including them would fix the miss rate at ~100% because tool
-//     definitions vary by session but the completion is often identical
+// The point of the cache is that the SAME semantic request hits. Fields that
+// vary per request (a requestId, a timestamp, a client tag) make every send
+// unique and defeat the cache for reasons the operator cannot see. Content is
+// trimmed for the same reason — one trailing newline should not be a miss.
+//
+// Only the fields that change the answer survive: role and content.
+function normalizeMessages(messages) {
+  if (!Array.isArray(messages)) return [];
+  return messages.map((m) => {
+    if (!m || typeof m !== "object") return m;
+    const role = m.role || "";
+    const content = typeof m.content === "string" ? m.content.trim() : m.content;
+    return { role, content };
+  });
+}
+
 function computeKey({ model, messages, temperature, topP, maxTokens, body } = {}) {
   const bucketed = {
     model: model || "",
-    messages: Array.isArray(messages) ? messages : [],
+    messages: normalizeMessages(messages),
     temperature: temperature ?? body?.temperature ?? null,
     top_p: topP ?? body?.top_p ?? null,
     max_tokens: maxTokens ?? body?.max_tokens ?? null,
@@ -73,6 +95,36 @@ export function cacheKey(params) {
   return key;
 }
 
+// True when a response should be stored.
+//
+// THREE cases are excluded:
+//   - refusals: caching a "I can't help" answer means every retry inside TTL
+//     gets the same refusal, which reads as a broken model.
+//   - budget exhaustion (finish_reason: "length" with no content): a retry with
+//     a larger max_tokens should hit the upstream, not the cache.
+//   - tiny answers: not worth the slot.
+export function shouldCache(body, content = "") {
+  const text = typeof content === "string" ? content.trim() : "";
+
+  // Order matters.
+  // Budget exhaustion first: an empty answer with finish_reason "length" is
+  // not "too short", it is a retry candidate.
+  // Refusal next: a short refusal must still be labelled a refusal, not
+  // swallowed by the length threshold, or the cache will re-serve it.
+  // Length last: only substantive, non-refusal answers are worth a slot.
+  const finish = body?.choices?.[0]?.finish_reason;
+  if (finish === "length" && text.length === 0) return { cache: false, reason: "budget-exhausted" };
+
+  if (isRefusal(text)) return { cache: false, reason: "refusal" };
+  if (text.length < MIN_CACHEABLE_CHARS) return { cache: false, reason: "too-short" };
+
+  return { cache: true };
+}
+
+export function ttlFor(kind = "chat") {
+  return TTL_BY_KIND[kind] ?? DEFAULT_TTL_MS;
+}
+
 export function get(key) {
   if (!key) return null;
   const hit = state.entries.get(key);
@@ -89,10 +141,6 @@ export function get(key) {
   return hit.value;
 }
 
-// Store one response body.
-//
-// Overwrites on collision: a newer answer for the same key is more likely to
-// reflect the current provider state than the one it replaces.
 export function set(key, value, { ttlMs = DEFAULT_TTL_MS } = {}) {
   if (!key) return false;
   if (state.entries.size >= MAX_ENTRIES) {
@@ -117,8 +165,13 @@ export function stats() {
     hits: state.hits,
     misses: state.misses,
     evictions: state.evictions,
+    skips: state.skips,
     hitRate: total > 0 ? state.hits / total : 0,
   };
 }
 
-export const CACHE_LIMITS = { DEFAULT_TTL_MS, MAX_ENTRIES, MAX_KEY_BYTES };
+// Named multi-cache wrapper. Benchmark loops benefit from an "infinite"
+// (process-lifetime) cache because the payload + model pair is deterministic;
+// chat benefits from a shorter one because the operator's follow-ups may look
+// like the previous turn. The caller decides by passing a kind to `set`.
+export const CACHE_LIMITS = { DEFAULT_TTL_MS, MAX_ENTRIES, MAX_KEY_BYTES, MIN_CACHEABLE_CHARS, TTL_BY_KIND };
