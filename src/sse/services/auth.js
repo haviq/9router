@@ -5,6 +5,14 @@ import { MAX_RATE_LIMIT_COOLDOWN_MS } from "open-sse/config/errorConfig.js";
 import { resolveProviderId, FREE_PROVIDERS } from "@/shared/constants/providers.js";
 import { getAntigravityQuotaCache, getAntigravityModelQuota } from "./antigravityQuota.js";
 import { isKeyCooling, markKeyCooldown } from "@/lib/keyPool.js";
+import {
+  orderAccounts,
+  shouldSkipAccount,
+  markAccountRequest,
+  shouldAlertAccount,
+  accountUsedPercent,
+  DEFAULT_GUARD,
+} from "@/lib/antigravityGuard.js";
 import * as log from "../utils/logger.js";
 
 // Mutex to prevent race conditions during account selection
@@ -88,6 +96,14 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
     // Also skip connections whose API key is currently in cooldown after a
     // key-level failure (401/402/403/429) so a benched key does not keep
     // answering earlier than the provider asked.
+    //
+    // Antigravity accounts also skip when the account is at or above the hard
+    // percent limit (default 95) AND the pool has another account. Driving the
+    // operator's own Google account to the last few percent is what turns a
+    // usage pattern into an abuse signal; the guard steers away while a healthy
+    // account remains. A single-account pool is never skipped, or the request
+    // would strand.
+    const antigravityPoolSize = connections.length;
     const availableConnections = connections.filter(c => {
       if (excludeSet.has(c.id)) return false;
       if (isKeyCooling(c.id)) return false;
@@ -101,6 +117,25 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
         if (quota && quota.remainingPercentage <= 0 && quota.resetAt && new Date(quota.resetAt).getTime() > Date.now()) {
           const account = c.id?.slice(0, 8) || "unknown";
           log.info("AG_QUOTA", `${account} | CACHE_BLOCK ${model} — skip upstream until ${quota.resetAt}`);
+          return false;
+        }
+        // Soft guard: when the account is nearly full and there is another to
+        // pick, let the healthier one answer. Never hides the last account.
+        if (shouldSkipAccount(c, connQuotas ? (connQuotas[model] || getAntigravityModelQuota(connQuotas, model)) : null, antigravityPoolSize)) {
+          const account = c.id?.slice(0, 8) || "unknown";
+          const used = accountUsedPercent(connQuotas ? (connQuotas[model] || getAntigravityModelQuota(connQuotas, model)) : null);
+          log.info("AG_GUARD", `${account} | HARD_LIMIT ${Math.round(used)}% — steering to another account`);
+          // Best-effort alert: the operator should know before the cliff.
+          if (shouldAlertAccount(c.id, used)) {
+            import("@/lib/notifier.js").then(({ notify }) => {
+              notify({
+                title: "Antigravity quota high",
+                level: "warning",
+                message: `${account} is at ${Math.round(used)}% — routing steered away.`,
+                key: `ag-quota:${c.id}`,
+              }).catch(() => {});
+            }).catch(() => {});
+          }
           return false;
         }
       }
