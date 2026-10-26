@@ -50,6 +50,8 @@ export default function TokenSaverClient() {
   // values always win, so this only changes requests that sent nothing.
   const [tokenBudgetEnabled, setTokenBudgetEnabled] = useState(true);
   const [contextRollingEnabled, setContextRollingEnabled] = useState(false);
+  const [costAlertEnabled, setCostAlertEnabled] = useState(false);
+  const [costAlertThreshold, setCostAlertThreshold] = useState(5);
   // Exact-match response cache: same body within TTL is served from memory
   // instead of a second upstream round trip. Per-request bypass via header
   // x-9router-nocache: 1.
@@ -384,6 +386,18 @@ export default function TokenSaverClient() {
     patchSetting({ contextRollingEnabled: value });
   };
 
+  const handleCostAlertEnabled = (value) => {
+    setCostAlertEnabled(value);
+    patchSetting({ costAlertEnabled: value });
+  };
+
+  const handleCostAlertThreshold = (value) => {
+    const n = Number(value);
+    if (!Number.isFinite(n) || n < 0) return;
+    setCostAlertThreshold(n);
+    patchSetting({ costAlertDailyThresholdUsd: n });
+  };
+
   const handleResponseCacheEnabled = (value) => {
     setResponseCacheEnabled(value);
     patchSetting({ responseCacheEnabled: value });
@@ -471,6 +485,8 @@ export default function TokenSaverClient() {
           setTokenBudgetEnabled(data.tokenBudgetEnabled !== false);
           setResponseCacheEnabled(data.responseCacheEnabled !== false);
           setContextRollingEnabled(data.contextRollingEnabled === true);
+          setCostAlertEnabled(data.costAlertEnabled === true);
+          setCostAlertThreshold(Number(data.costAlertDailyThresholdUsd) || 5);
           setPxpipeEnabled(!!data.pxpipeEnabled);
           if (typeof data.pxpipeMinChars === "number") setPxpipeMinChars(data.pxpipeMinChars);
           refreshHeadroomStatus();
@@ -838,6 +854,37 @@ export default function TokenSaverClient() {
           <Toggle
             checked={contextRollingEnabled}
             onChange={() => handleContextRollingEnabled(!contextRollingEnabled)}
+          />
+        </div>
+
+        {/* Cost Alert — dollar threshold + Telegram. Prices only when known. */}
+        <div className="flex items-center justify-between pt-4 mt-4 border-t border-border gap-4 flex-wrap">
+          <div className="min-w-0 flex-1">
+            <p className="font-medium">
+              Cost Alert{" "}
+              <span className="text-xs font-normal text-text-muted">(Telegram)</span>
+            </p>
+            <p className="text-sm text-text-muted">
+              Alert when the rolling window spend exceeds the threshold. Only
+              fires when the pricing repo resolves a price — a token count is
+              not compared against a dollar limit. One notice per day.
+              Requires a Telegram bot token + chat id in Settings.
+            </p>
+            <div className="flex items-center gap-2 mt-2">
+              <label className="text-xs text-text-muted">Threshold $</label>
+              <input
+                type="number"
+                min="0"
+                step="0.5"
+                value={costAlertThreshold}
+                onChange={(e) => handleCostAlertThreshold(e.target.value)}
+                className="w-24 px-2 py-1 text-sm bg-surface-2 border border-border rounded"
+              />
+            </div>
+          </div>
+          <Toggle
+            checked={costAlertEnabled}
+            onChange={() => handleCostAlertEnabled(!costAlertEnabled)}
           />
         </div>
 
