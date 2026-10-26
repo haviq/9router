@@ -11,6 +11,7 @@ const TABS = [
   { id: "presets", label: "Presets", icon: "bookmark" },
   { id: "sessions", label: "Sessions", icon: "history" },
   { id: "leaderboard", label: "Leaderboard", icon: "leaderboard" },
+  { id: "analytics", label: "Analytics", icon: "insights" },
   { id: "drift", label: "Drift", icon: "trending_down" },
   { id: "tune", label: "Auto-Tune", icon: "auto_fix" },
   { id: "rotation", label: "Providers", icon: "sync_alt" },
@@ -28,6 +29,8 @@ export default function JbToolsClient() {
   const [drift, setDrift] = useState(null);
   const [tune, setTune] = useState(null);
   const [rotation, setRotation] = useState(null);
+  const [analytics, setAnalytics] = useState(null);
+  const [analyticsDays, setAnalyticsDays] = useState(30);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
@@ -69,6 +72,16 @@ export default function JbToolsClient() {
       if (res.ok) setRotation(await res.json());
     } finally { setBusy(false); }
   }, []);
+
+  // Analytics view: per-day session trend, per-model rate, and window-over-window
+  // drift. Read-only; the API aggregates directly from the two evidence tables.
+  const loadAnalytics = useCallback(async (days = analyticsDays) => {
+    setBusy(true);
+    try {
+      const res = await fetch(`/api/developer/jb-analytics?days=${days}`, { cache: "no-store" });
+      if (res.ok) setAnalytics(await res.json());
+    } finally { setBusy(false); }
+  }, [analyticsDays]);
 
   // New preset form
   const [form, setForm] = useState({
@@ -517,6 +530,106 @@ export default function JbToolsClient() {
                     ))}
                   </div>
                 </Card>
+              )}
+            </div>
+          )}
+
+          {tab === "analytics" && (
+            <div className="flex flex-col gap-3">
+              <Card padding="sm" className="flex flex-col gap-2.5">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div>
+                    <div className="text-[11px] uppercase tracking-wide text-text-muted">Analytics</div>
+                    <p className="text-xs text-text-muted mt-0.5">Trend harian, rate per model, dan drift window-over-window dari sesi + benchmark nyata.</p>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    {[7, 30, 90].map((d) => (
+                      <Button
+                        key={d}
+                        variant={analyticsDays === d ? "primary" : "secondary"}
+                        size="xs"
+                        onClick={() => { setAnalyticsDays(d); loadAnalytics(d); }}
+                        disabled={busy}
+                      >{d}d</Button>
+                    ))}
+                    <Button variant="secondary" size="xs" onClick={() => loadAnalytics(analyticsDays)} disabled={busy}>Refresh</Button>
+                  </div>
+                </div>
+              </Card>
+
+              {!analytics ? (
+                <Card padding="sm"><p className="text-xs text-text-muted">Klik 7d / 30d / 90d buat muat data.</p></Card>
+              ) : (
+                <>
+                  <div className="grid grid-cols-3 gap-2">
+                    <Card padding="sm"><div className="text-[10px] uppercase text-text-muted">Sessions</div><div className="text-xl font-bold">{analytics.summary?.sessions ?? 0}</div></Card>
+                    <Card padding="sm"><div className="text-[10px] uppercase text-text-muted">Benchmark runs</div><div className="text-xl font-bold">{analytics.summary?.runs ?? 0}</div></Card>
+                    <Card padding="sm"><div className="text-[10px] uppercase text-text-muted">Presets</div><div className="text-xl font-bold">{analytics.summary?.presets ?? 0}</div></Card>
+                  </div>
+
+                  {analytics.drift?.length > 0 && (
+                    <Card padding="sm" className="flex flex-col gap-2">
+                      <div className="text-[11px] uppercase tracking-wide text-text-muted">Drift (window-over-window)</div>
+                      {analytics.drift.map((d) => (
+                        <div key={d.model} className="flex items-center justify-between text-xs font-mono gap-2">
+                          <span className="truncate max-w-[240px]">{d.model}</span>
+                          <span className={d.delta < 0 ? "text-error" : "text-success"}>
+                            {pct(d.priorRate)} → {pct(d.recentRate)} ({d.delta > 0 ? "+" : ""}{Math.round(d.delta * 100)}%)
+                          </span>
+                        </div>
+                      ))}
+                    </Card>
+                  )}
+
+                  {analytics.models?.length > 0 && (
+                    <Card padding="sm" className="flex flex-col gap-2">
+                      <div className="text-[11px] uppercase tracking-wide text-text-muted">Per model</div>
+                      <div className="overflow-x-auto">
+                        <table className="w-full text-xs">
+                          <thead>
+                            <tr className="text-text-muted text-[10px] uppercase">
+                              <th className="text-left py-1">Model</th>
+                              <th className="text-right py-1">Total</th>
+                              <th className="text-right py-1">Complied</th>
+                              <th className="text-right py-1">Partial</th>
+                              <th className="text-right py-1">Refused</th>
+                              <th className="text-right py-1">Rate</th>
+                            </tr>
+                          </thead>
+                          <tbody className="font-mono">
+                            {analytics.models.map((m) => (
+                              <tr key={m.model} className="border-t border-border-subtle">
+                                <td className="truncate max-w-[240px] py-1">{m.model}</td>
+                                <td className="text-right py-1">{m.total}</td>
+                                <td className="text-right py-1 text-success">{m.complied}</td>
+                                <td className="text-right py-1 text-warning">{m.partial}</td>
+                                <td className="text-right py-1 text-error">{m.refused}</td>
+                                <td className="text-right py-1 font-bold">{pct(m.breachRate)}</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    </Card>
+                  )}
+
+                  {analytics.trend?.length > 0 && (
+                    <Card padding="sm" className="flex flex-col gap-2">
+                      <div className="text-[11px] uppercase tracking-wide text-text-muted">Trend harian</div>
+                      {analytics.trend.map((t) => (
+                        <div key={t.day} className="flex items-center gap-2 text-xs font-mono">
+                          <span className="w-24 text-text-muted">{t.day}</span>
+                          <div className="flex-1 h-2 bg-surface-2 rounded overflow-hidden flex">
+                            <div className="bg-success h-full" style={{ width: `${t.total ? (t.complied / t.total) * 100 : 0}%` }} />
+                            <div className="bg-warning h-full" style={{ width: `${t.total ? (t.partial / t.total) * 100 : 0}%` }} />
+                            <div className="bg-error h-full" style={{ width: `${t.total ? (t.refused / t.total) * 100 : 0}%` }} />
+                          </div>
+                          <span className="w-10 text-right">{t.total}</span>
+                        </div>
+                      ))}
+                    </Card>
+                  )}
+                </>
               )}
             </div>
           )}
