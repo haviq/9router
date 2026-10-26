@@ -41,7 +41,7 @@ export default function ProxyPoolsPage() {
   const [formData, setFormData] = useState(normalizeFormData());
   const [batchImportText, setBatchImportText] = useState("");
   const [vercelForm, setVercelForm] = useState({ vercelToken: "", projectName: "vercel-relay" });
-  const [cloudflareForm, setCloudflareForm] = useState({ accountId: "", apiToken: "", projectName: "cloudflare-relay" });
+  const [cloudflareForm, setCloudflareForm] = useState({ accountId: "", apiToken: "", projectName: "cloudflare-relay", routerApiKey: "", relaySecret: "" });
   const [denoForm, setDenoForm] = useState({ denoToken: "", orgDomain: "", projectName: "" });
   const [netlifyForm, setNetlifyForm] = useState({ netlifyToken: "", projectName: "netlify-relay" });
   const [saving, setSaving] = useState(false);
@@ -957,6 +957,22 @@ export default function ProxyPoolsPage() {
             onChange={(e) => setCloudflareForm((prev) => ({ ...prev, projectName: e.target.value }))}
             placeholder="my-relay"
             hint="Unique name for your Cloudflare Worker. Leave empty for auto-generated name."
+          />
+          <Input
+            label="9router API Key (optional)"
+            value={cloudflareForm.routerApiKey}
+            onChange={(e) => setCloudflareForm((prev) => ({ ...prev, routerApiKey: e.target.value }))}
+            placeholder="sk-xxxxxxxxxxxxxxxx"
+            hint="Injected as Authorization for callers that send none. Stored on the Worker, not the client."
+            type="password"
+          />
+          <Input
+            label="Relay Secret (optional)"
+            value={cloudflareForm.relaySecret}
+            onChange={(e) => setCloudflareForm((prev) => ({ ...prev, relaySecret: e.target.value }))}
+            placeholder="shared-secret"
+            hint="Callers must send x-relay-secret. Second gate so a leaked URL alone is not enough."
+            type="password"
           />
           <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
             <Button
