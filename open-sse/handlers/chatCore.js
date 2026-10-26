@@ -17,6 +17,7 @@ import { trackPendingRequest, appendRequestLog, saveRequestDetail } from "@/lib/
 import { getExecutor } from "../executors/index.js";
 import { supportsGrokCliReasoningEffort } from "../config/grokCli.js";
 import { buildRequestDetail, extractRequestConfig } from "./chatCore/requestDetail.js";
+import { rollContext, resolveConfig as resolveContextRolling } from "@/lib/contextRolling.js";
 import { handleForcedSSEToJson } from "./chatCore/sseToJsonHandler.js";
 import { handleNonStreamingResponse } from "./chatCore/nonStreamingHandler.js";
 import { handleStreamingResponse, buildOnStreamComplete } from "./chatCore/streamingHandler.js";
@@ -440,6 +441,34 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
     targetFormat === FORMATS.CLAUDE
   ) {
     anchorClaudeCache(translatedBody);
+  }
+
+  // Context rolling: trim the middle of a long conversation before dispatch.
+  // Only touches bodies that carry a messages array — other wire shapes (gemini
+  // contents, responses-api input) are skipped rather than reshaped, because a
+  // shape-aware trim per format is a different feature with its own tests.
+  if (Array.isArray(translatedBody?.messages)) {
+    let rollSettings = null;
+    try {
+      const { getSettings } = await import("@/lib/localDb");
+      rollSettings = await getSettings();
+    } catch { /* settings unavailable → feature off */ }
+    if (rollSettings) {
+      const rolling = resolveContextRolling({
+        contextRollingEnabled: rollSettings.contextRollingEnabled,
+        contextRollingKeepHead: rollSettings.contextRollingKeepHead,
+        contextRollingKeepTail: rollSettings.contextRollingKeepTail,
+        contextRollingMinMessages: rollSettings.contextRollingMinMessages,
+      });
+      if (rolling.enabled) {
+        const before = translatedBody.messages.length;
+        const rolled = rollContext(translatedBody.messages, rolling);
+        if (rolled.dropped > 0) {
+          translatedBody.messages = rolled.messages;
+          log?.debug?.("CTXROLL", `dropped ${rolled.dropped} of ${before} messages`);
+        }
+      }
+    }
   }
 
   const executor = getExecutor(provider);
