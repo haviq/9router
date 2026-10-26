@@ -26,6 +26,15 @@ import { updateProviderCredentials, checkAndRefreshToken } from "../services/tok
 import { getProjectIdForConnection } from "open-sse/services/projectId.js";
 import { stripModelContextMarker } from "open-sse/utils/modelMarkers.js";
 import { getKeyAccessContext, enforceKeyAccess, filterAdapterModels } from "../services/keyAccess.js";
+import { peekJson } from "@/lib/jbSessionCapture.js";
+import {
+  cacheKey,
+  get as cacheGet,
+  set as cacheSet,
+  shouldCache,
+  ttlFor,
+  wantsNoCache,
+} from "@/lib/responseCache.js";
 
 /**
  * Handle chat completion request
@@ -256,7 +265,33 @@ async function handleSingleModelChat(
 
   const { provider, model } = modelInfo;
 
-  // Routing shown in the unified "▶" line (client model → provider/model)
+  // Exact-match response cache at the single-model path. The combo path already
+  // has this; without the same tap here, an API client calling a model directly
+  // pays for every identical retry. Only non-stream JSON can be cached — a
+  // cached SSE body cannot be replayed to a caller that expects a live stream —
+  // and the caller can opt out per request with x-9router-nocache.
+  const isStream = body?.stream === true;
+  const skipCache = isStream || wantsNoCache(request?.headers);
+  const cacheK = skipCache
+    ? null
+    : cacheKey({
+        model: `${provider}/${model}`,
+        messages: body?.messages,
+        temperature: body?.temperature,
+        topP: body?.top_p,
+        maxTokens: body?.max_tokens,
+        body,
+      });
+  if (cacheK) {
+    const cached = cacheGet(cacheK);
+    if (cached) {
+      log.info("CHAT", `response cache hit [${provider}/${model}]`);
+      return new Response(cached, {
+        status: 200,
+        headers: { "content-type": "application/json", "x-9router-cache": "hit" },
+      });
+    }
+  }
 
   // Extract userAgent from request
   const userAgent = request?.headers?.get("user-agent") || "";
@@ -404,7 +439,28 @@ async function handleSingleModelChat(
       }
     });
 
-    if (result.success) return result.response;
+    if (result.success) {
+      // Cache store on the success path. Non-stream JSON only — a cached SSE
+      // body cannot be replayed to a caller that expects a live stream. The
+      // peek uses a clone so the original response reaches the caller intact.
+      if (cacheK && !skipCache && result.response) {
+        try {
+          const contentType = result.response.headers?.get?.("content-type") || "";
+          if (contentType.includes("application/json")) {
+            const landed = await peekJson(result.response.clone());
+            if (landed) {
+              const text = landed?.choices?.[0]?.message?.content || "";
+              if (shouldCache(landed, text).cache) {
+                cacheSet(cacheK, JSON.stringify(landed), { ttlMs: ttlFor("chat") });
+              }
+            }
+          }
+        } catch {
+          // Cache writes must never break a request.
+        }
+      }
+      return result.response;
+    }
 
     // Antigravity 409/429: refresh live quota to get exact resetAt before locking
     let quotaResetMs = null;
