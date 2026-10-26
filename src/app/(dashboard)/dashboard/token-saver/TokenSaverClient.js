@@ -49,6 +49,7 @@ export default function TokenSaverClient() {
   // vision 4096, standard 2048) when the request omits max_tokens. Caller-set
   // values always win, so this only changes requests that sent nothing.
   const [tokenBudgetEnabled, setTokenBudgetEnabled] = useState(true);
+  const [contextRollingEnabled, setContextRollingEnabled] = useState(false);
   // Exact-match response cache: same body within TTL is served from memory
   // instead of a second upstream round trip. Per-request bypass via header
   // x-9router-nocache: 1.
@@ -378,6 +379,11 @@ export default function TokenSaverClient() {
     patchSetting({ tokenBudgetEnabled: value });
   };
 
+  const handleContextRollingEnabled = (value) => {
+    setContextRollingEnabled(value);
+    patchSetting({ contextRollingEnabled: value });
+  };
+
   const handleResponseCacheEnabled = (value) => {
     setResponseCacheEnabled(value);
     patchSetting({ responseCacheEnabled: value });
@@ -464,6 +470,7 @@ export default function TokenSaverClient() {
           // off, so an older settings row without the keys reads as "enabled".
           setTokenBudgetEnabled(data.tokenBudgetEnabled !== false);
           setResponseCacheEnabled(data.responseCacheEnabled !== false);
+          setContextRollingEnabled(data.contextRollingEnabled === true);
           setPxpipeEnabled(!!data.pxpipeEnabled);
           if (typeof data.pxpipeMinChars === "number") setPxpipeMinChars(data.pxpipeMinChars);
           refreshHeadroomStatus();
@@ -811,6 +818,26 @@ export default function TokenSaverClient() {
           <Toggle
             checked={responseCacheEnabled}
             onChange={() => handleResponseCacheEnabled(!responseCacheEnabled)}
+          />
+        </div>
+
+        {/* Context Rolling — trims the middle of long conversations. */}
+        <div className="flex items-center justify-between pt-4 mt-4 border-t border-border gap-4 flex-wrap">
+          <div className="min-w-0 flex-1">
+            <p className="font-medium">
+              Context Rolling{" "}
+              <span className="text-xs font-normal text-text-muted">(Long chats)</span>
+            </p>
+            <p className="text-sm text-text-muted">
+              Trim the middle of conversations longer than 12 messages: keep the
+              head and the last 6 turns, collapse everything between into one
+              note. Not an LLM summarizer — a summary pass costs a round trip and
+              can invent instruction, which is worse than a trimmed history.
+            </p>
+          </div>
+          <Toggle
+            checked={contextRollingEnabled}
+            onChange={() => handleContextRollingEnabled(!contextRollingEnabled)}
           />
         </div>
 
