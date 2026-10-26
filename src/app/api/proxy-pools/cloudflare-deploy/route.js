@@ -1,18 +1,41 @@
 import { NextResponse } from "next/server";
 import { createProxyPool } from "@/models";
 
-// Relay worker source code deployed to Cloudflare
+// Relay worker source code deployed to Cloudflare.
+//
+// Two extensions over the plain forwarder:
+//   1. If the client sends no Authorization header, the worker injects the
+//      9router API key read from the ROUTER_API_KEY env var. The key never
+//      reaches the client device, so it cannot leak from there.
+//   2. If RELAY_SECRET is set, the worker requires a matching x-relay-secret
+//      header. This is a deliberate second gate: a URL is not a secret, so
+//      without this anyone who learns the workers.dev hostname gets the key
+//      for free.
+//
+// The env vars are optional. Without them the worker behaves exactly like the
+// original forwarder, which keeps existing deployments valid after upgrade.
 const RELAY_WORKER_CODE = `
 export default {
   async fetch(request, env, ctx) {
     const target = request.headers.get("x-relay-target");
     const relayPath = request.headers.get("x-relay-path") || "/";
-    
+
     if (!target) {
       return new Response(JSON.stringify({ error: "Missing x-relay-target header" }), {
         status: 400,
         headers: { "content-type": "application/json" },
       });
+    }
+
+    // Gate 1: shared secret. Only enforced when the operator set one.
+    if (env.RELAY_SECRET) {
+      const provided = request.headers.get("x-relay-secret");
+      if (provided !== env.RELAY_SECRET) {
+        return new Response(JSON.stringify({ error: "Forbidden" }), {
+          status: 403,
+          headers: { "content-type": "application/json" },
+        });
+      }
     }
 
     const targetUrl = target.replace(/\\/$/, "") + relayPath;
@@ -21,14 +44,22 @@ export default {
       headers: new Headers(request.headers),
     };
 
+    newRequestInit.headers.delete("x-relay-target");
+    newRequestInit.headers.delete("x-relay-path");
+    newRequestInit.headers.delete("x-relay-secret");
+    newRequestInit.headers.delete("host");
+
+    // Gate 2: auto-key. When the client did not bring its own credential and
+    // the operator stored one, this is what makes the relay usable without
+    // shipping the key to every device.
+    if (env.ROUTER_API_KEY && !newRequestInit.headers.get("authorization")) {
+      newRequestInit.headers.set("authorization", \`Bearer \${env.ROUTER_API_KEY}\`);
+    }
+
     if (request.method !== "GET" && request.method !== "HEAD") {
       newRequestInit.body = request.body;
       newRequestInit.duplex = "half";
     }
-
-    newRequestInit.headers.delete("x-relay-target");
-    newRequestInit.headers.delete("x-relay-path");
-    newRequestInit.headers.delete("host");
 
     try {
       const response = await fetch(targetUrl, newRequestInit);
@@ -53,6 +84,11 @@ export async function POST(request) {
     const accountId = body.accountId?.trim();
     const apiToken = body.apiToken?.trim();
     const projectName = body.projectName?.trim() || `relay-${Date.now().toString(36)}`;
+    // Optional. When present, the worker injects the 9router key and requires
+    // the shared secret from callers. Both env vars are stored on the Worker
+    // (not on the client), so a leaked relay URL alone is not enough access.
+    const routerApiKey = typeof body.routerApiKey === "string" ? body.routerApiKey.trim() : "";
+    const relaySecret = typeof body.relaySecret === "string" ? body.relaySecret.trim() : "";
 
     if (!accountId || !apiToken) {
       return NextResponse.json({ error: "Cloudflare Account ID and API Token are required" }, { status: 400 });
@@ -101,6 +137,35 @@ export async function POST(request) {
       const err = await enableSubdomainRes.json().catch(() => ({}));
       console.error("Cloudflare subdomain enable error:", err);
       // We don't fail completely here, just continue
+    }
+
+    // 2b. Store the optional credentials on the Worker itself.
+    //
+    // The Worker runs in Cloudflare's edge; the values must live there, not be
+    // sent by each caller. Cloudflare accepts a plain-text env PUT; we only
+    // send the keys the operator supplied, so a deployment without them stays
+    // a plain forwarder.
+    if (routerApiKey || relaySecret) {
+      const envVars = {};
+      if (routerApiKey) envVars.ROUTER_API_KEY = routerApiKey;
+      if (relaySecret) envVars.RELAY_SECRET = relaySecret;
+      const envRes = await fetch(`${workerScriptUrl}/settings`, {
+        method: "PATCH",
+        headers: {
+          Authorization: `Bearer ${apiToken}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ bindings: Object.entries(envVars).map(([name, text]) => ({ type: "plain_text", name, text })) }),
+      });
+      if (!envRes.ok) {
+        const err = await envRes.json().catch(() => ({}));
+        // Failing open here would leave the Worker thinking it has no key,
+        // which silently breaks the auto-key contract. Report it.
+        return NextResponse.json(
+          { error: err.errors?.[0]?.message || "Worker deployed but failed to set env vars" },
+          { status: envRes.status }
+        );
+      }
     }
 
     // 3. Get the workers.dev subdomain for the account to construct the final URL
