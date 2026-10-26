@@ -107,7 +107,7 @@ export default function CombosPage() {
   } = useCopyToClipboard();
   useEffect(() => {
     queueMicrotask(() => fetchData());
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  }, []);
 
   // Drop stale selection when the combo list changes (delete / refresh).
   useEffect(() => {
@@ -998,6 +998,7 @@ function ComboFormModal({
   // Initialize state with combo values - key prop on parent handles reset on remount
   const [name, setName] = useState(combo?.name || "");
   const [models, setModels] = useState(combo?.models || []);
+  const [systemPrompt, setSystemPrompt] = useState(combo?.systemPrompt || "");
   const [showModelSelect, setShowModelSelect] = useState(false);
   const [saving, setSaving] = useState(false);
   const [nameError, setNameError] = useState("");
@@ -1086,7 +1087,8 @@ function ComboFormModal({
     setSaving(true);
     await onSave({
       name: name.trim(),
-      models
+      models,
+      systemPrompt: systemPrompt.trim(),
     });
     setSaving(false);
   }
@@ -1129,6 +1131,24 @@ function ComboFormModal({
               <span className="material-symbols-outlined text-[16px]">add</span>
               Add Model
             </button>
+          </div>
+
+          {/* System Prompt for the combo */}
+          <div>
+            <label className="text-sm font-medium mb-1.5 block">
+              System Prompt{" "}
+              <span className="text-text-muted text-xs font-normal">(optional)</span>
+            </label>
+            <textarea
+              value={systemPrompt}
+              onChange={(e) => setSystemPrompt(e.target.value)}
+              placeholder="Instructions prepended to every request that targets this combo..."
+              rows={6}
+              className="w-full text-xs font-mono bg-surface-2 border border-black/10 dark:border-white/10 rounded-lg p-2 resize-y focus:outline-none focus:border-primary/50"
+            />
+            <p className="text-[10px] text-text-muted mt-1">
+              Injected as a system message when a request targets this combo and the caller did not send a system message of their own. Empty = no injection.
+            </p>
           </div>
 
           {/* Actions */}

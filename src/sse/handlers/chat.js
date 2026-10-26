@@ -246,8 +246,33 @@ async function handleSingleModelChat(
 
       const comboStickyLimit = chatSettings.comboStickyRoundRobinLimit;
       log.info("CHAT", `Combo "${modelStr}" with ${augmentedModels.length} models (strategy: ${comboStrategy}, sticky: ${comboStickyLimit})`);
+
+      // Per-combo system prompt. Injected once at the head of the messages
+      // array so every seat in the combo sees the same steering. Applied here
+      // rather than inside handleComboChat because the fallback loop calls
+      // handleSingleModel with the original body for each seat — injecting
+      // further down would either run per-seat (duplicating the prompt) or be
+      // lost between retries. Skips when the caller already sent a system
+      // message so a client-specified prompt is never silently overwritten.
+      let comboBody = body;
+      try {
+        const { getComboByName } = await import("@/lib/db/repos/combosRepo.js");
+        const comboRow = await getComboByName(modelStr);
+        const comboPrompt = typeof comboRow?.systemPrompt === "string" ? comboRow.systemPrompt.trim() : "";
+        if (comboPrompt) {
+          const msgs = Array.isArray(body?.messages) ? body.messages : [];
+          const hasSystem = msgs.some((m) => m?.role === "system");
+          if (!hasSystem) {
+            comboBody = { ...body, messages: [{ role: "system", content: comboPrompt }, ...msgs] };
+            log.info("COMBO", `injected system prompt for combo "${modelStr}" (${comboPrompt.length} chars)`);
+          } else {
+            log.debug?.("COMBO", `combo "${modelStr}" has system prompt but caller already sent one — keeping caller's`);
+          }
+        }
+      } catch { /* lookup failure → no injection, request unchanged */ }
+
       return handleComboChat({
-        body,
+        body: comboBody,
         models: augmentedModels,
         handleSingleModel: withCapacityAdapterStripping(
           (b, m) => handleSingleModelChat(b, m, clientRawRequest, request, apiKey, dashboardPayloadOverride, requestedModel),

@@ -96,6 +96,10 @@ export const TABLES = {
       name: "TEXT UNIQUE NOT NULL",
       kind: "TEXT",
       models: "TEXT NOT NULL",
+      // Per-combo system prompt. Injected at the head of the message array when
+      // the request resolves to this combo, so a combo carries its own steering
+      // instead of borrowing the global injection. Null when unused.
+      systemPrompt: "TEXT",
       createdAt: "TEXT NOT NULL",
       updatedAt: "TEXT NOT NULL",
     },
