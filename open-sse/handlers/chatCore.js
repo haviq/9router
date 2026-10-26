@@ -428,7 +428,19 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
 
   // Pin cache breakpoints to the final body — every saver above can reshape
   // system/tools/messages, and a stale anchor costs a full prefix rewrite.
-  if (passthrough && clientTool === "claude") anchorClaudeCache(translatedBody);
+  //
+  // The anchor was historically gated to native Claude passthrough (Claude Code
+  // CLI → Claude). But an OpenAI-shaped client translated to the Claude wire
+  // also benefits: the prefix is the same, only the client format differs. Gate
+  // on the target format instead, so translated traffic gets prompt caching too.
+  // Providers with dropOutputConfig-style quirks are still excluded by their
+  // shape — those bodies never reach the Claude transport.
+  if (
+    (passthrough && clientTool === "claude") ||
+    targetFormat === FORMATS.CLAUDE
+  ) {
+    anchorClaudeCache(translatedBody);
+  }
 
   const executor = getExecutor(provider);
   trackPendingRequest(model, provider, connectionId, true);
