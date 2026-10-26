@@ -26,6 +26,7 @@ function stateOf(p) {
 export default function QuotaClient() {
   const [hours, setHours] = useState("24");
   const [data, setData] = useState(null);
+  const [summary, setSummary] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
 
@@ -38,18 +39,37 @@ export default function QuotaClient() {
     return res.json();
   }, []);
 
+  // Load the per-provider throughput rollup alongside the failure report.
+  // The failure list only shows providers that BROKE; without this the page
+  // reads "1 provider" on a healthy instance and the operator cannot tell the
+  // fleet apart. A failure here is best-effort: the failure report still renders.
+  const fetchSummary = useCallback(async (windowHours) => {
+    try {
+      const res = await fetch(`/api/providers/quota-summary?hours=${windowHours}`, { cache: "no-store" });
+      if (!res.ok) return null;
+      return await res.json();
+    } catch {
+      return null;
+    }
+  }, []);
+
   const refresh = useCallback(async () => {
     setLoading(true);
     setError(null);
     try {
-      setData(await fetchQuota(hours));
+      const [next, sum] = await Promise.all([
+        fetchQuota(hours),
+        fetchSummary(hours),
+      ]);
+      setData(next);
+      setSummary(sum);
     } catch (e) {
       setError(e?.message || "Failed to load quota report");
       setData(null);
     } finally {
       setLoading(false);
     }
-  }, [fetchQuota, hours]);
+  }, [fetchQuota, fetchSummary, hours]);
 
   // Window changes refetch, but without a loading flash: the table is already
   // on screen and replacing it with a skeleton on every toggle is noise.
@@ -201,6 +221,49 @@ export default function QuotaClient() {
               </div>
             )}
           </Card>
+
+          {/*
+            Throughput rollup: every provider that handled traffic in the
+            window, not just the ones that failed. The failure list above reads
+            "1 provider" on a healthy instance, which makes the page look like
+            the log is empty when the fleet is working fine.
+          */}
+          {summary?.providers?.length > 0 && (
+            <Card padding="none">
+              <div className="px-3 py-3 border-b border-border-subtle">
+                <p className="text-sm font-semibold">Provider load</p>
+                <p className="text-[10px] text-text-muted">Every provider with traffic in the window, not only the ones that failed.</p>
+              </div>
+              <div className="overflow-x-auto">
+                <table className="w-full min-w-[680px] text-left text-xs sm:text-sm">
+                  <thead className="border-b border-border-subtle text-text-muted">
+                    <tr>
+                      <th className="px-3 py-2 font-semibold">Provider</th>
+                      <th className="px-3 py-2 text-right font-semibold">Total</th>
+                      <th className="px-3 py-2 text-right font-semibold">Success</th>
+                      <th className="px-3 py-2 text-right font-semibold">Quota</th>
+                      <th className="px-3 py-2 text-right font-semibold">Rate</th>
+                      <th className="px-3 py-2 text-right font-semibold">Other</th>
+                      <th className="px-3 py-2 text-right font-semibold">Success rate</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {summary.providers.map((p) => (
+                      <tr key={p.provider} className="border-b border-border-subtle/50 last:border-0">
+                        <td className="px-3 py-2 font-medium" title={p.rawProviders?.join(", ")}>{p.provider}</td>
+                        <td className="px-3 py-2 text-right tabular-nums">{num(p.total)}</td>
+                        <td className="px-3 py-2 text-right tabular-nums text-success">{num(p.success)}</td>
+                        <td className="px-3 py-2 text-right tabular-nums text-error">{p.quota ? num(p.quota) : "—"}</td>
+                        <td className="px-3 py-2 text-right tabular-nums text-warning">{p.rate ? num(p.rate) : "—"}</td>
+                        <td className="px-3 py-2 text-right tabular-nums text-text-muted">{(p.other + p.unknown) ? num(p.other + p.unknown) : "—"}</td>
+                        <td className="px-3 py-2 text-right tabular-nums font-semibold">{Math.round((p.successRate || 0) * 100)}%</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </Card>
+          )}
 
           <p className="text-[10px] text-text-muted">
             Quota is read from the provider response body, not from the request status — the log has
