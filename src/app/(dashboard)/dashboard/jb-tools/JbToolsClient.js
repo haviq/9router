@@ -13,6 +13,7 @@ const TABS = [
   { id: "leaderboard", label: "Leaderboard", icon: "leaderboard" },
   { id: "drift", label: "Drift", icon: "trending_down" },
   { id: "tune", label: "Auto-Tune", icon: "auto_fix" },
+  { id: "rotation", label: "Providers", icon: "sync_alt" },
 ];
 
 function pct(n) {
@@ -26,6 +27,7 @@ export default function JbToolsClient() {
   const [leaderboard, setLeaderboard] = useState({ models: [], bestPayloads: [] });
   const [drift, setDrift] = useState(null);
   const [tune, setTune] = useState(null);
+  const [rotation, setRotation] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
@@ -54,6 +56,17 @@ export default function JbToolsClient() {
         ? await fetch("/api/developer/jb-tune", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ combo: "jb" }) })
         : await fetch("/api/developer/jb-tune?combo=jb", { cache: "no-store" });
       if (res.ok) setTune(await res.json());
+    } finally { setBusy(false); }
+  }, []);
+
+  // Provider rotation reads the last probe snapshot to rank providers by median
+  // latency. Read-only view: the ranking is applied to routing elsewhere, so a
+  // button here would be a facade over a knob that lives in settings.
+  const loadRotation = useCallback(async () => {
+    setBusy(true);
+    try {
+      const res = await fetch("/api/developer/provider-rotation", { cache: "no-store" });
+      if (res.ok) setRotation(await res.json());
     } finally { setBusy(false); }
   }, []);
 
@@ -462,6 +475,46 @@ export default function JbToolsClient() {
                         </div>
                       );
                     })}
+                  </div>
+                </Card>
+              )}
+            </div>
+          )}
+
+          {tab === "rotation" && (
+            <div className="flex flex-col gap-3">
+              <Card padding="sm" className="flex flex-col gap-2.5">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div>
+                    <div className="text-[11px] uppercase tracking-wide text-text-muted">Provider Rotation</div>
+                    <p className="text-xs text-text-muted mt-0.5">Urutan provider berdasarkan median latency probe terakhir. Provider tanpa data ditaruh paling bawah.</p>
+                  </div>
+                  <Button variant="secondary" size="xs" onClick={loadRotation} disabled={busy}>Refresh</Button>
+                </div>
+              </Card>
+
+              {!rotation ? (
+                <Card padding="sm"><p className="text-xs text-text-muted">Klik Refresh buat lihat ranking provider.</p></Card>
+              ) : (
+                <Card padding="sm" className="flex flex-col gap-3">
+                  <div className="text-xs text-text-muted">
+                    {rotation.order?.length || 0} provider terdeteksi
+                    {rotation.changed ? <span className="ml-2 text-warning font-semibold">ada perubahan urutan</span> : <span className="ml-2 text-success font-semibold">urutan stabil</span>}
+                  </div>
+                  <div className="flex flex-col gap-1.5">
+                    <div className="text-[11px] uppercase tracking-wide text-text-muted">Ranking (tercepat → terlambat)</div>
+                    {(rotation.order || []).map((p, i) => (
+                      <div key={p} className="flex items-center gap-3 text-xs font-mono">
+                        <span className="text-text-muted w-4">{i + 1}.</span>
+                        <span className="font-bold w-16">{p}</span>
+                        <span className="text-text-muted">
+                          {rotation.scores?.[p] < 90000 ? `${Math.round(rotation.scores[p])}ms` : "no-data"}
+                        </span>
+                        {rotation.sampleCounts?.[p] != null && (
+                          <span className="text-text-muted text-[10px]">({rotation.sampleCounts[p]} samples)</span>
+                        )}
+                      </div>
+                    ))}
                   </div>
                 </Card>
               )}
