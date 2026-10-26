@@ -101,13 +101,19 @@ export default function CombosPage() {
   const [presetLoading, setPresetLoading] = useState(null); // "cursor" | "claude" | null
   const [selectedIds, setSelectedIds] = useState([]);
   const [bulkBusy, setBulkBusy] = useState(false);
+  // Real latency per model, read from the last probe sweep. The combos page is
+  // the surface where the operator decides which seat order to trust; a chip
+  // showing the measured latency next to each seat answers "which one is fast"
+  // without a round trip to the Model Status page.
+  const [seatLatency, setSeatLatency] = useState({}); // modelId -> { ok, latencyMs, checkedAt }
+  const [latencyBusy, setLatencyBusy] = useState(false);
   const {
     copied,
     copy
   } = useCopyToClipboard();
   useEffect(() => {
     queueMicrotask(() => fetchData());
-  }, []);
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Drop stale selection when the combo list changes (delete / refresh).
   useEffect(() => {
@@ -208,10 +214,37 @@ export default function CombosPage() {
         normalized[cap.key] = normalizeCapEntry(rawAdapter[cap.key]);
       }
       setCapacityAdapter(normalized);
+      // Latency map is best-effort; a failure here must not block the page.
+      loadSeatLatency().catch(() => {});
     } catch (error) {
       console.log("Error fetching data:", error);
     } finally {
       setLoading(false);
+    }
+  }
+
+  // Pull the last probe sweep and index it by model id. The endpoint already
+  // returns one row per tested model, so one call covers every seat in every
+  // combo on the page.
+  async function loadSeatLatency() {
+    setLatencyBusy(true);
+    try {
+      const res = await fetch("/api/models/probe-matrix", { cache: "no-store" });
+      if (!res.ok) return;
+      const data = await res.json();
+      const map = {};
+      for (const r of data?.results || []) {
+        if (!r?.id) continue;
+        map[r.id] = {
+          ok: !!r.ok,
+          latencyMs: Number(r.latencyMs) || 0,
+          checkedAt: r.checkedAt || null,
+          error: r.error || null,
+        };
+      }
+      setSeatLatency(map);
+    } finally {
+      setLatencyBusy(false);
     }
   }
   async function handleSetCapacityAdapter(next) {
@@ -474,6 +507,17 @@ export default function CombosPage() {
           >
             Heal Combos
           </Button>
+          <Button
+            variant="ghost"
+            size="sm"
+            icon="speed"
+            loading={latencyBusy}
+            onClick={() => loadSeatLatency().catch(() => {})}
+            className="w-full whitespace-nowrap sm:w-auto"
+            title="Reload measured latency per seat from the last probe sweep"
+          >
+            Refresh Latency
+          </Button>
           <Button icon="add" onClick={() => setShowCreateModal(true)} className="w-full sm:w-auto whitespace-nowrap">
             Create Combo
           </Button>
@@ -534,7 +578,7 @@ export default function CombosPage() {
             {(() => {
           const comboByName = Object.fromEntries(combos.map(c => [c.name, c.models]));
           const liveAliases = buildLiveAliases(activeProviders);
-          return combos.map(combo => <ComboCard key={combo.id} combo={combo} getCaps={getCaps} comboByName={comboByName} activeProviders={activeProviders} liveAliases={liveAliases} copied={copied} onCopy={copy} onEdit={() => setEditingCombo(combo)} onDelete={() => handleDelete(combo.id)} strategy={comboStrategies[combo.name] || {}} onSetStrategy={patch => handleSetComboStrategy(combo.name, patch)} selected={selectedIds.includes(combo.id)} onToggleSelect={() => toggleSelect(combo.id)} />);
+          return combos.map(combo => <ComboCard key={combo.id} combo={combo} getCaps={getCaps} comboByName={comboByName} activeProviders={activeProviders} liveAliases={liveAliases} copied={copied} onCopy={copy} onEdit={() => setEditingCombo(combo)} onDelete={() => handleDelete(combo.id)} strategy={comboStrategies[combo.name] || {}} onSetStrategy={patch => handleSetComboStrategy(combo.name, patch)} selected={selectedIds.includes(combo.id)} onToggleSelect={() => toggleSelect(combo.id)} seatLatency={seatLatency} />);
         })()}
           </div>
         </div>}
@@ -651,7 +695,8 @@ function ComboCard({
   strategy = {},
   onSetStrategy,
   selected = false,
-  onToggleSelect
+  onToggleSelect,
+  seatLatency = {}
 }) {
   const [showJudgeSelect, setShowJudgeSelect] = useState(false);
   const current = strategy.fallbackStrategy || "fallback";
@@ -694,11 +739,33 @@ function ComboCard({
               )}
             </div>
             <div className="mt-1 flex min-w-0 flex-wrap items-center gap-1">
-              {combo.models.length === 0 ? <span className="text-xs text-text-muted italic">No models</span> : combo.models.slice(0, 3).map((model, index) => <code key={index} title={deadSet.has(model) ? "Provider switched off — this seat cannot route" : undefined} className={`inline-flex items-center gap-1 rounded px-1.5 py-0.5 font-mono text-xs ${deadSet.has(model) ? "bg-red-500/10 text-red-500 line-through decoration-red-500/60" : "bg-black/5 text-text-muted dark:bg-white/5"}`}>
+              {combo.models.length === 0 ? <span className="text-xs text-text-muted italic">No models</span> : combo.models.slice(0, 3).map((model, index) => {
+                const probe = seatLatency[model];
+                const chip = !probe
+                  ? null
+                  : probe.ok && probe.latencyMs > 0
+                    ? { text: `${probe.latencyMs}ms`, cls: "bg-emerald-500/15 text-emerald-600 dark:text-emerald-400" }
+                    : { text: "down", cls: "bg-red-500/15 text-red-500" };
+                return <code key={index} title={deadSet.has(model) ? "Provider switched off — this seat cannot route" : probe?.error ? `Last error: ${probe.error}` : undefined} className={`inline-flex items-center gap-1 rounded px-1.5 py-0.5 font-mono text-xs ${deadSet.has(model) ? "bg-red-500/10 text-red-500 line-through decoration-red-500/60" : "bg-black/5 text-text-muted dark:bg-white/5"}`}>
                     <span>{model}</span>
+                    {chip && <span className={`rounded px-1 py-px text-[9px] font-semibold no-underline ${chip.cls}`}>{chip.text}</span>}
                     {deadSet.has(model) && <span className="material-symbols-outlined text-[12px] no-underline">link_off</span>}
                     <CapacityBadges caps={comboByName[model] ? aggregateComboCapabilities(comboByName[model], comboByName, getCaps) : getCaps?.(model)} />
-                  </code>)}
+                  </code>;
+              })}
+              {/* Aggregate latency across the combos materialized on the card — the
+                  number the operator would get by trying the combo once. Median, not
+                  mean, so one slow seat does not drag the whole combo's chip. */}
+              {(() => {
+                const measured = combo.models.slice(0, 3).map((m) => seatLatency[m]).filter((p) => p && p.ok && p.latencyMs > 0);
+                if (measured.length === 0) return null;
+                const lats = measured.map((p) => p.latencyMs).sort((a, b) => a - b);
+                const mid = lats[Math.floor(lats.length / 2)];
+                return <span className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-semibold bg-primary/10 text-primary" title={`${measured.length} seat(s) measured — median latency`}>
+                  <span className="material-symbols-outlined text-[12px]">speed</span>
+                  {mid}ms
+                </span>;
+              })()}
               {combo.models.length > 3 && <span className="text-[10px] text-text-muted">+{combo.models.length - 3} more</span>}
             </div>
             {comboCaps && <div className="mt-1 flex items-center gap-2 text-[10px] text-text-muted">
